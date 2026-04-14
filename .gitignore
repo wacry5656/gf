@@ -1,0 +1,21 @@
+node_modules
+dist-server
+.env
+client/node_modules
+client/dist
+data/
+# logs
+*.log
+
+# database
+*.sqlite
+*.db
+
+# vscode
+.vscode
+
+# OS
+.DS_Store
+
+# build cache
+.cache
