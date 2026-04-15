@@ -262,7 +262,7 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
 
     res.json({
       phase: state.phase,
-      phaseLabel: PHASE_LABEL[(state.phase as RelationshipPhase) || 'close'] || '熟悉',
+      phaseLabel: PHASE_LABEL[(state.phase as RelationshipPhase) || 'close'],
       closeness: state.closeness,
       trust: state.trust,
     });
