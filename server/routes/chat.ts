@@ -159,20 +159,21 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         res.write('event: ready\ndata: {"ok":true}\n\n');
         console.log(`[Chat/Stream][degraded] ready 已发送`);
 
+        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+        const maxTokens = getMaxTokens(currentUserText);
+        const controller = new AbortController();
+        let firstChunkSent = false;
+
         // Heartbeat to keep connection alive
-        const heartbeatTimer = setInterval(() => {
+        const degradedHeartbeat = setInterval(() => {
           if (!controller.signal.aborted) {
             res.write(': ping\n\n');
           }
         }, 12000);
 
-        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
-        const maxTokens = getMaxTokens(currentUserText);
-        const controller = new AbortController();
-        let firstChunkSent = false;
         req.on('close', () => {
           console.log(`[Chat/Stream][degraded] 客户端断开, firstChunkSent=${firstChunkSent}`);
-          clearInterval(heartbeatTimer);
+          clearInterval(degradedHeartbeat);
           controller.abort();
         });
 
@@ -191,7 +192,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
             controller.signal,
             maxTokens
           );
-          clearInterval(heartbeatTimer);
+          clearInterval(degradedHeartbeat);
           const cleaned = cleanReply(fullReply);
           const replies = splitReply(cleaned);
           if (!controller.signal.aborted) {
@@ -201,7 +202,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
             res.end();
           }
         } catch (streamErr: any) {
-          clearInterval(heartbeatTimer);
+          clearInterval(degradedHeartbeat);
           console.error(`[Chat/Stream][degraded] 流式异常:`, streamErr?.stack || streamErr);
           if (!controller.signal.aborted) {
             res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
