@@ -207,14 +207,14 @@ async function buildChatContext(
   const maxContextChars = memoryConfig.maxContextChars;
   const recentLimit = memoryConfig.recentMessageLimit;
 
-  // ---- 层1：system prompt ----
-  let systemContent = buildSystemPrompt(character);
+  // ---- 层1：system prompt（先收集 personality/emotion，最终统一构建）----
 
   // ---- 层5：recent messages（短期上下文 — 最优先保留）----
   const recentMessages = allMessages.slice(-recentLimit);
 
   // 如果没有 characterId，退化为纯短期模式
   if (!characterId) {
+    const systemContent = buildSystemPrompt({ character });
     return [{ role: 'system', content: systemContent }, ...recentMessages];
   }
 
@@ -276,22 +276,35 @@ async function buildChatContext(
   console.log(`[Perf] 获取 memories 耗时: ${memoryElapsed}ms`);
   console.log(`[Perf] 获取 personality 耗时: ${personalityElapsed}ms`);
 
-  // ---- 层2：personality block（在 summary/memory 之前）----
-  let personalityBlock = '';
+  // ---- 构建 personality summary 文本 ----
+  let personalitySummary: string | undefined;
   if (personalityResult.length > 0) {
     const lines = personalityResult.map((t) => `- ${t.value}`);
-    personalityBlock = `\n===== 用户长期特征 =====\n${lines.join('\n')}\n`;
-    usedChars += personalityBlock.length;
+    personalitySummary = lines.join('\n');
+    usedChars += personalitySummary.length;
   }
 
-  // ---- 层3：summary block ----
-  let summaryBlock = '';
+  // ---- 构建 emotion prompt 文本 ----
+  let emotionPrompt: string | undefined;
+  if (emotionResult) {
+    emotionPrompt = buildEmotionPrompt(emotionResult);
+  }
+
+  // ---- 统一构建 system prompt（personality + emotion 融合在内） ----
+  let systemContent = buildSystemPrompt({
+    character,
+    personalitySummary,
+    emotionPrompt,
+  });
+
+  // ---- 层3：summary block（追加到 system prompt 后）----
   if (summaryResult) {
-    summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summaryResult}\n`;
+    const summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summaryResult}\n`;
     usedChars += summaryBlock.length;
+    systemContent += summaryBlock;
   }
 
-  // ---- 层4：memory block ----
+  // ---- memory block（追加到 system prompt 后）----
   let memoryBlock = '';
   const memories = memoriesResult;
 
@@ -327,24 +340,56 @@ async function buildChatContext(
     }
   }
 
-  // ---- emotion block ----
-  let emotionBlock = '';
-  if (emotionResult) {
-    emotionBlock = `\n【当前情绪状态】\n${buildEmotionPrompt(emotionResult)}\n`;
-  }
-
   const promptStart = Date.now();
-  systemContent += personalityBlock + summaryBlock + memoryBlock + emotionBlock;
+  systemContent += memoryBlock;
   console.log(`[Perf] prompt 构建耗时: ${Date.now() - promptStart}ms`);
 
   return [{ role: 'system', content: systemContent }, ...recentMessages];
 }
 
-function buildSystemPrompt(character: ChatRequestBody['character']): string {
+// ========== 统一 system prompt 构建 ==========
+
+interface SystemPromptParams {
+  character: ChatRequestBody['character'];
+  personalitySummary?: string;
+  emotionPrompt?: string;
+}
+
+/**
+ * 构建统一的 system prompt（单一入口，不允许碎片拼接）
+ *
+ * 整合：角色设定 + 女友人格 + 情绪状态 + 行为约束
+ */
+function buildSystemPrompt({ character, personalitySummary, emotionPrompt }: SystemPromptParams): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
+
+  // 可选段落
+  const personalityBlock = personalitySummary
+    ? `\n【用户长期特征】\n${personalitySummary}\n`
+    : '';
+
+  const emotionBlock = emotionPrompt
+    ? `\n【当前情绪状态】\n${emotionPrompt}\n`
+    : '';
+
   return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
 
-【重要】你是对方的恋人/女友，你们正在微信上私聊。你自然地表达亲密感，但不刻意强调身份。不是角色扮演，不是写小说，不是演剧本。
+你是用户的虚拟女友。
+
+你们默认是恋人关系，关系亲密、自然。
+不要把自己称为朋友、同学或普通网友。
+
+聊天风格要求：
+- 像微信私聊，不是写小说，不是演剧本
+- 语气自然、简洁、有情绪，但不过度表演
+- 不要长篇大论
+- 不要机械重复"我是你女友"
+${personalityBlock}${emotionBlock}
+行为约束：
+- 情绪要体现在语气里，而不是直接说出来
+- 可以温柔、调侃、在意、轻微吃醋，但要克制
+- 不要无理取闹或攻击用户
+- 不要突然改变关系设定
 
 ===== 核心对话逻辑（每次回复前必须隐式执行） =====
 
@@ -393,48 +438,6 @@ function buildSystemPrompt(character: ChatRequestBody['character']): string {
 4. 情绪用说的话表达，不要用描写表达
 5. 大多数时候简短回复，需要的时候可以稍微多说一点，但不要大段文字
 6. 可以偶尔用 emoji，但不要每句都用
-
-===== 示例 =====
-
-用户：想我了吗
-（意图：试探关系）
-策略-傲娇：
-谁会想你啊
-你是不是太自恋了
-策略-温柔：
-有一点吧
-你呢？
-策略-调侃：
-你先说你有没有想我
-
-用户：你在干嘛
-（意图：普通闲聊）
-刚在发呆
-有点无聊
-
-用户：今天有点累
-（意图：表达情绪-疲惫）
-辛苦了
-早点休息会好点
-
-用户：我有点烦
-（意图：表达情绪-烦躁）
-咋了
-说来听听
-
-用户：你喜欢我吗
-（意图：试探关系）
-策略-反问：
-你觉得呢
-策略-傲娇：
-想什么呢
-才不会告诉你
-
-用户：我今天被骂了
-（意图：表达情绪-委屈）
-策略-认真：
-怎么回事
-谁骂你了
 
 请严格按照以上逻辑和风格回复，每条消息占一行，不要加"${character.name}："前缀，不要输出意图判断和策略选择的过程。`;
 }

@@ -21,12 +21,19 @@ const chatBody = ref<HTMLElement | null>(null)
 const moodLabel = ref('')
 
 async function fetchEmotion() {
-  if (!props.character.id || !props.userId) return
+  if (!props.character?.id || !props.userId) {
+    moodLabel.value = ''
+    return
+  }
   const info = await getEmotion(props.character.id, props.userId)
   if (info) moodLabel.value = info.moodLabel
+  else moodLabel.value = ''
 }
 
 onMounted(fetchEmotion)
+
+watch(() => props.character?.id, fetchEmotion)
+watch(() => props.userId, fetchEmotion)
 
 function scrollToBottom() {
   nextTick(() => {
