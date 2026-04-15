@@ -75,16 +75,18 @@ async function selectCharacter(char: Character) {
 }
 
 async function onDeleteCharacter(char: Character) {
-  if (!char.id) return
+  if (!char.id || !user.value) return
   try {
-    await deleteCharacter(char.id)
-    characters.value = characters.value.filter(c => c.id !== char.id)
+    await deleteCharacter(char.id, user.value.userId)
+    // 删除成功后，重新请求角色列表而非只做本地过滤
     if (activeCharacter.value?.id === char.id) {
       activeCharacter.value = null
       chatMessages.value = []
     }
+    await loadCharacters()
   } catch (e: any) {
     console.error(e)
+    alert(e.message || '删除角色失败，请重试')
   }
 }
 

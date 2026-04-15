@@ -61,6 +61,7 @@ async function send() {
           ...updated,
           { role: 'assistant', content: streamContent }
         ])
+        scrollToBottom()
       }
     )
 

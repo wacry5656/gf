@@ -79,8 +79,8 @@ export async function createCharacter(userId: number, char: Character): Promise<
   return data.characterId;
 }
 
-export async function deleteCharacter(characterId: number): Promise<void> {
-  const res = await fetch(`/api/data/characters/${characterId}`, { method: 'DELETE' });
+export async function deleteCharacter(characterId: number, userId: number): Promise<void> {
+  const res = await fetch(`/api/data/characters/${characterId}?userId=${userId}`, { method: 'DELETE' });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || '删除角色失败');

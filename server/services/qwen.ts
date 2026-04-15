@@ -7,6 +7,20 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const STREAM_TIMEOUT_MS = 60000;
 const MAX_RETRIES = 2;
 
+/**
+ * 根据用户输入长度动态决定 max_tokens
+ *
+ * 短输入（< 20字，如"在吗""你好"）通常只需简短回复 → 400
+ * 中等输入（20~100字，日常聊天）需要适中回复空间 → 600
+ * 长输入（> 100字，倾诉/复杂话题）需要更充分的回复 → 900
+ */
+export function getMaxTokens(userInput: string): number {
+  const len = userInput.trim().length;
+  if (len < 20) return 400;
+  if (len <= 100) return 600;
+  return 900;
+}
+
 function getApiConfig() {
   const apiKey = process.env.QWEN_API_KEY;
   const apiUrl = process.env.QWEN_API_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
@@ -20,7 +34,7 @@ function getApiConfig() {
   return { apiKey, apiUrl, model, timeoutMs };
 }
 
-export async function callQwenAPI(messages: ChatMessage[]): Promise<string> {
+export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): Promise<string> {
   const { apiKey, apiUrl, model, timeoutMs } = getApiConfig();
 
   let lastError: Error | null = null;
@@ -41,7 +55,7 @@ export async function callQwenAPI(messages: ChatMessage[]): Promise<string> {
           messages,
           temperature: 0.85,
           top_p: 0.9,
-          max_tokens: 300,
+          max_tokens: maxTokens || 600,
         }),
         signal: controller.signal,
       });
@@ -93,7 +107,8 @@ export async function callQwenAPI(messages: ChatMessage[]): Promise<string> {
 export async function callQwenAPIStream(
   messages: ChatMessage[],
   onChunk: (content: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  maxTokens?: number
 ): Promise<string> {
   const { apiKey, apiUrl, model } = getApiConfig();
   const streamTimeout = Number(process.env.QWEN_STREAM_TIMEOUT_MS) || STREAM_TIMEOUT_MS;
@@ -118,7 +133,7 @@ export async function callQwenAPIStream(
         messages,
         temperature: 0.85,
         top_p: 0.9,
-        max_tokens: 300,
+        max_tokens: maxTokens || 600,
         stream: true,
       }),
       signal: controller.signal,
