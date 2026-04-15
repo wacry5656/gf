@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from 'vue'
 import type { Character, ChatMessage } from '../api'
-import { sendMessage, saveMessage, clearMessages } from '../api'
+import { sendMessageStream, saveMessage, clearMessages } from '../api'
 
 const props = defineProps<{
   character: Character
@@ -14,6 +14,7 @@ const emit = defineEmits<{
 
 const inputText = ref('')
 const loading = ref(false)
+const streaming = ref(false)
 const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 
@@ -37,6 +38,7 @@ async function send() {
   emit('update:messages', updated)
   inputText.value = ''
   loading.value = true
+  streaming.value = false
 
   // 保存用户消息到数据库
   if (props.character.id) {
@@ -44,24 +46,52 @@ async function send() {
   }
 
   try {
-    const replies = await sendMessage(props.character, updated)
-    let current = [...updated]
-    for (const reply of replies) {
-      const assistantMsg: ChatMessage = { role: 'assistant', content: reply }
-      current = [...current, assistantMsg]
-    }
-    emit('update:messages', current)
+    let streamContent = ''
 
-    // 保存每条 AI 回复到数据库
-    if (props.character.id) {
+    const replies = await sendMessageStream(
+      props.character,
+      updated,
+      (delta) => {
+        if (!streaming.value) {
+          // First chunk: switch from "思考中..." to streaming display
+          streaming.value = true
+        }
+        streamContent += delta
+        emit('update:messages', [
+          ...updated,
+          { role: 'assistant', content: streamContent }
+        ])
+      }
+    )
+
+    // Replace streaming message with cleaned/split replies
+    if (replies.length > 0) {
+      const finalMessages = [...updated]
       for (const reply of replies) {
-        saveMessage(props.character.id, 'assistant', reply).catch(() => {})
+        finalMessages.push({ role: 'assistant', content: reply })
+      }
+      emit('update:messages', finalMessages)
+
+      // 保存每条 AI 回复到数据库
+      if (props.character.id) {
+        for (const reply of replies) {
+          saveMessage(props.character.id, 'assistant', reply).catch(() => {})
+        }
+      }
+    } else if (streamContent) {
+      // Fallback: no split replies received, use raw stream content
+      emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
+      if (props.character.id) {
+        saveMessage(props.character.id, 'assistant', streamContent).catch(() => {})
       }
     }
   } catch (e: any) {
     error.value = e.message || '发送失败'
+    // Remove placeholder on error
+    emit('update:messages', updated)
   } finally {
     loading.value = false
+    streaming.value = false
   }
 }
 
@@ -111,7 +141,7 @@ function handleKeydown(e: KeyboardEvent) {
         <div class="message-bubble">{{ msg.content }}</div>
       </div>
 
-      <div v-if="loading" class="message message-assistant">
+      <div v-if="loading && !streaming" class="message message-assistant">
         <div class="message-label">{{ character.name }}</div>
         <div class="message-bubble typing">思考中...</div>
       </div>

@@ -35,7 +35,13 @@ function submit() {
     name: form.name.trim(),
     gender: form.gender,
     personality,
-    description: form.description.trim() || '一个友善的虚拟聊天伙伴',
+    description: form.description.trim() || (
+      form.gender === 'female'
+        ? '你是用户的女朋友，你们正在恋爱中，日常聊天温馨甜蜜'
+        : form.gender === 'male'
+          ? '你是用户的男朋友，你们正在恋爱中，日常聊天温馨甜蜜'
+          : '你是用户的亲密伙伴，你们关系很好'
+    ),
   })
 }
 </script>

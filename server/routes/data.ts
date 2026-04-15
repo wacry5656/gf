@@ -39,12 +39,19 @@ dataRouter.post('/characters', (req: Request, res: Response) => {
   }
 });
 
-// 删除角色（连带删除聊天记录）
+// 删除角色（连带删除聊天记录、记忆、摘要）
 dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
   try {
     const charId = Number(req.params.id);
-    db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
-    db.prepare('DELETE FROM characters WHERE id = ?').run(charId);
+
+    const deleteAll = db.transaction((id: number) => {
+      db.prepare('DELETE FROM memories WHERE character_id = ?').run(id);
+      db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(id);
+      db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(id);
+      db.prepare('DELETE FROM characters WHERE id = ?').run(id);
+    });
+
+    deleteAll(charId);
     res.json({ success: true });
   } catch (err: any) {
     console.error('Delete character error:', err?.message);

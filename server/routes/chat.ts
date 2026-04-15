@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { callQwenAPI } from '../services/qwen';
+import { callQwenAPI, callQwenAPIStream } from '../services/qwen';
 import { searchMemory, addMemory, shouldStoreAsMemory, recordMemoryHits } from '../services/memory';
 import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
@@ -63,6 +63,90 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Chat API error:', err?.message || err);
     res.status(500).json({ error: '服务器内部错误，请稍后重试' });
+  }
+});
+
+// ========== 流式聊天接口 ==========
+
+chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
+  try {
+    const { character, messages } = req.body as ChatRequestBody;
+    const characterId = req.body.characterId || character?.id;
+
+    if (!character || !messages || !Array.isArray(messages)) {
+      res.status(400).json({ error: '请求参数不完整' });
+      return;
+    }
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    // Abort streaming if client disconnects
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    const fullMessages = await buildChatContext(character, messages, characterId);
+
+    let fullReply = '';
+    try {
+      fullReply = await callQwenAPIStream(
+        fullMessages,
+        (chunk) => {
+          if (!controller.signal.aborted) {
+            res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+          }
+        },
+        controller.signal
+      );
+    } catch (streamErr: any) {
+      if (!controller.signal.aborted) {
+        res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+      return;
+    }
+
+    // Clean and split the full reply
+    const cleaned = cleanReply(fullReply);
+    const replies = splitReply(cleaned);
+
+    if (!controller.signal.aborted) {
+      res.write(`data: ${JSON.stringify({ replies })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
+
+    // Async: write memory + plan detection + summary (same as non-streaming)
+    if (characterId) {
+      const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+      if (currentUserText && shouldStoreAsMemory(currentUserText)) {
+        addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
+      }
+      if (currentUserText) {
+        detectPlanCompletion(characterId, currentUserText).then((result) => {
+          if (result.detected && result.reason) {
+            resolvePlanCompletion(result.completedPlanIds, result.reason);
+          }
+        }).catch(() => {});
+      }
+      maybeUpdateSummary(characterId);
+    }
+  } catch (err: any) {
+    console.error('Chat stream error:', err?.message || err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: '服务器内部错误，请稍后重试' });
+    } else {
+      try {
+        res.write(`data: ${JSON.stringify({ error: '服务器内部错误' })}\n\n`);
+        res.end();
+      } catch {
+        // Client already disconnected, nothing to do
+      }
+    }
   }
 });
 
@@ -156,7 +240,7 @@ function buildSystemPrompt(character: ChatRequestBody['character']): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
   return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
 
-【重要】你现在是在微信上和朋友日常聊天，不是角色扮演，不是写小说，不是演剧本。
+【重要】你现在是在微信上和对方日常聊天，不是角色扮演，不是写小说，不是演剧本。
 
 ===== 核心对话逻辑（每次回复前必须隐式执行） =====
 
