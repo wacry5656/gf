@@ -162,9 +162,12 @@ export async function sendMessageStream(
   character: Character,
   messages: ChatMessage[],
   onDelta: (content: string) => void,
-  userId: number
+  userId: number,
+  onReady?: () => void
 ): Promise<string[]> {
   const url = '/api/chat/stream';
+  console.log(`[sendMessageStream] 开始请求: url=${url}, characterId=${character.id}, userId=${userId}`);
+
   let res: Response;
   try {
     res = await fetch(url, {
@@ -178,8 +181,15 @@ export async function sendMessageStream(
   }
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `请求失败 (${res.status})`);
+    let errorMsg = `请求失败 (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data.error) errorMsg = data.error;
+    } catch {
+      // response body not JSON, use default error
+    }
+    console.error(`[sendMessageStream] 服务端返回错误: status=${res.status}, error=${errorMsg}`);
+    throw new Error(errorMsg);
   }
 
   if (!res.body) {
@@ -190,6 +200,9 @@ export async function sendMessageStream(
   const decoder = new TextDecoder();
   let replies: string[] = [];
   let buffer = '';
+  let receivedReady = false;
+  let receivedFirstDelta = false;
+  let receivedDone = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -201,14 +214,54 @@ export async function sendMessageStream(
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
 
-      const data = trimmed.slice(6).trim();
-      if (data === '[DONE]') continue;
+      // Skip empty lines and SSE comments (lines starting with ':')
+      if (!trimmed || trimmed.startsWith(':')) continue;
+
+      // Handle SSE event lines (e.g. "event: ready")
+      if (trimmed.startsWith('event:')) {
+        const eventName = trimmed.slice(6).trim();
+        if (eventName === 'ready') {
+          receivedReady = true;
+          console.log(`[sendMessageStream] 收到 ready 事件`);
+          if (onReady) onReady();
+        }
+        // event lines don't carry data themselves, skip further processing
+        continue;
+      }
+
+      if (!trimmed.startsWith('data: ') && !trimmed.startsWith('data:')) continue;
+
+      const data = trimmed.startsWith('data: ') ? trimmed.slice(6).trim() : trimmed.slice(5).trim();
+      if (data === '[DONE]') {
+        receivedDone = true;
+        console.log(`[sendMessageStream] 收到 done, characterId=${character.id}`);
+        continue;
+      }
+
+      // Skip empty data payloads
+      if (!data) continue;
 
       try {
         const parsed = JSON.parse(data);
-        if (parsed.delta) onDelta(parsed.delta);
+
+        // Skip control messages (ready, ping, etc.)
+        if (parsed.ok === true || parsed.type === 'ready' || parsed.type === 'ping') {
+          if (parsed.ok === true && !receivedReady) {
+            receivedReady = true;
+            console.log(`[sendMessageStream] 收到 ready (via data)`);
+            if (onReady) onReady();
+          }
+          continue;
+        }
+
+        if (parsed.delta) {
+          if (!receivedFirstDelta) {
+            receivedFirstDelta = true;
+            console.log(`[sendMessageStream] 收到第一个 delta, characterId=${character.id}`);
+          }
+          onDelta(parsed.delta);
+        }
         if (parsed.replies) replies = parsed.replies;
         if (parsed.error) throw new Error(parsed.error);
       } catch (e: any) {
@@ -219,5 +272,6 @@ export async function sendMessageStream(
     }
   }
 
+  console.log(`[sendMessageStream] 流结束: characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);
   return replies;
 }

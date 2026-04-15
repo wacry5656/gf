@@ -79,6 +79,8 @@ async function send() {
     })
   }
 
+  let connected = false
+
   try {
     let streamContent = ''
 
@@ -97,7 +99,11 @@ async function send() {
         ])
         scrollToBottom()
       },
-      props.userId
+      props.userId,
+      () => {
+        // onReady: connection established, don't show error yet
+        connected = true
+      }
     )
 
     // Replace streaming message with cleaned/split replies
@@ -115,9 +121,17 @@ async function send() {
     // 刷新情绪和关系标签
     fetchStatus()
   } catch (e: any) {
-    error.value = e.message || '发送失败'
-    // Remove placeholder on error
-    emit('update:messages', updated)
+    // If connected but no delta yet, the error is likely a timeout on model side, not network
+    if (connected && !streaming.value) {
+      error.value = e.message || '回复生成超时，请重试'
+    } else {
+      error.value = e.message || '发送失败'
+    }
+    // If we already received partial content, keep it instead of discarding
+    // Only remove the placeholder if no content was streamed
+    if (!streaming.value) {
+      emit('update:messages', updated)
+    }
   } finally {
     loading.value = false
     streaming.value = false
