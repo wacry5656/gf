@@ -16,6 +16,33 @@ export interface User {
   username: string;
 }
 
+interface AuthResponsePayload {
+  userId?: number;
+  username?: string;
+  error?: string;
+}
+
+function parseJsonText(text: string): unknown {
+  if (!text || text.trim() === '') return null;
+  // Callers intentionally handle invalid JSON so they can fall back to
+  // proxy-safe error messages or partial stream recovery behavior.
+  return JSON.parse(text);
+}
+
+/**
+ * Handles proxy / gateway failures that may return HTML or empty bodies
+ * instead of the JSON payloads produced by the application server.
+ */
+function getResponseErrorMessageFromText(text: string, fallback: string): string {
+  try {
+    const data = parseJsonText(text) as AuthResponsePayload | null;
+    if (data?.error) return data.error;
+  } catch {
+    // Ignore non-JSON error bodies such as HTML error pages from proxies.
+  }
+  return fallback;
+}
+
 // ====== 认证 ======
 
 export async function register(username: string, password: string): Promise<User> {
@@ -24,9 +51,18 @@ export async function register(username: string, password: string): Promise<User
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '注册失败');
-  return data;
+  const raw = await res.text();
+  let data: AuthResponsePayload | null = null;
+  try {
+    data = parseJsonText(raw) as AuthResponsePayload | null;
+  } catch {
+    throw new Error(getResponseErrorMessageFromText(raw, '注册失败，请稍后重试'));
+  }
+  if (!res.ok) throw new Error(data?.error || '注册失败');
+  if (!data?.userId || !data?.username) {
+    throw new Error('注册失败，请稍后重试');
+  }
+  return { userId: data.userId, username: data.username };
 }
 
 export async function login(username: string, password: string): Promise<User> {
@@ -35,9 +71,18 @@ export async function login(username: string, password: string): Promise<User> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '登录失败');
-  return data;
+  const raw = await res.text();
+  let data: AuthResponsePayload | null = null;
+  try {
+    data = parseJsonText(raw) as AuthResponsePayload | null;
+  } catch {
+    throw new Error(getResponseErrorMessageFromText(raw, '登录失败，请稍后重试'));
+  }
+  if (!res.ok) throw new Error(data?.error || '登录失败');
+  if (!data?.userId || !data?.username) {
+    throw new Error('登录失败，请稍后重试');
+  }
+  return { userId: data.userId, username: data.username };
 }
 
 // ====== 聊天 ======
@@ -181,13 +226,7 @@ export async function sendMessageStream(
   }
 
   if (!res.ok) {
-    let errorMsg = `请求失败 (${res.status})`;
-    try {
-      const data = await res.json();
-      if (data.error) errorMsg = data.error;
-    } catch {
-      // response body not JSON, use default error
-    }
+    const errorMsg = getResponseErrorMessageFromText(await res.text(), `请求失败 (${res.status})`);
     console.error(`[sendMessageStream] 服务端返回错误: status=${res.status}, error=${errorMsg}`);
     throw new Error(errorMsg);
   }
@@ -203,73 +242,113 @@ export async function sendMessageStream(
   let receivedReady = false;
   let receivedFirstDelta = false;
   let receivedDone = false;
+  let streamReadError: unknown = null;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  // Parse one SSE event block (blank-line delimited) so ready/delta/done
+  // messages still work even when proxies coalesce or split TCP chunks.
+  const processEvent = (eventBlock: string) => {
+    const normalized = eventBlock.replace(/\r/g, '');
+    if (!normalized.trim()) return;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+    const lines = normalized.split('\n');
+    let eventName = '';
+    const dataLines: string[] = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
 
-      // Skip empty lines and SSE comments (lines starting with ':')
       if (!trimmed || trimmed.startsWith(':')) continue;
 
-      // Handle SSE event lines (e.g. "event: ready")
       if (trimmed.startsWith('event:')) {
-        const eventName = trimmed.slice(6).trim();
-        if (eventName === 'ready') {
-          receivedReady = true;
-          console.log(`[sendMessageStream] 收到 ready 事件`);
-          if (onReady) onReady();
-        }
-        // event lines don't carry data themselves, skip further processing
+        eventName = trimmed.slice(6).trim();
         continue;
       }
 
-      if (!trimmed.startsWith('data: ') && !trimmed.startsWith('data:')) continue;
-
-      const data = trimmed.startsWith('data: ') ? trimmed.slice(6).trim() : trimmed.slice(5).trim();
-      if (data === '[DONE]') {
-        receivedDone = true;
-        console.log(`[sendMessageStream] 收到 done, characterId=${character.id}`);
-        continue;
-      }
-
-      // Skip empty data payloads
-      if (!data) continue;
-
-      try {
-        const parsed = JSON.parse(data);
-
-        // Skip control messages (ready, ping, etc.)
-        if (parsed.ok === true || parsed.type === 'ready' || parsed.type === 'ping') {
-          if (parsed.ok === true && !receivedReady) {
-            receivedReady = true;
-            console.log(`[sendMessageStream] 收到 ready (via data)`);
-            if (onReady) onReady();
-          }
-          continue;
-        }
-
-        if (parsed.delta) {
-          if (!receivedFirstDelta) {
-            receivedFirstDelta = true;
-            console.log(`[sendMessageStream] 收到第一个 delta, characterId=${character.id}`);
-          }
-          onDelta(parsed.delta);
-        }
-        if (parsed.replies) replies = parsed.replies;
-        if (parsed.error) throw new Error(parsed.error);
-      } catch (e: any) {
-        // Only rethrow application errors, not JSON parse errors from partial SSE chunks
-        if (e instanceof SyntaxError) continue;
-        throw e;
+      if (trimmed.startsWith('data:')) {
+        dataLines.push(trimmed.slice(5).trimStart());
       }
     }
+
+    if (eventName === 'ready') {
+      receivedReady = true;
+      console.log(`[sendMessageStream] 收到 ready 事件`);
+      if (onReady) onReady();
+    }
+
+    const data = dataLines.join('\n').trim();
+    if (!data) return;
+
+    if (data === '[DONE]') {
+      receivedDone = true;
+      console.log(`[sendMessageStream] 收到 done, characterId=${character.id}`);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(data);
+
+      if (parsed.ok === true || parsed.type === 'ready' || parsed.type === 'ping') {
+        if (parsed.ok === true && !receivedReady) {
+          receivedReady = true;
+          console.log(`[sendMessageStream] 收到 ready (via data)`);
+          if (onReady) onReady();
+        }
+        return;
+      }
+
+      if (parsed.delta) {
+        if (!receivedFirstDelta) {
+          receivedFirstDelta = true;
+          console.log(`[sendMessageStream] 收到第一个 delta, characterId=${character.id}`);
+        }
+        onDelta(parsed.delta);
+      }
+      if (parsed.replies) replies = parsed.replies;
+      if (parsed.error) throw new Error(parsed.error);
+    } catch (e: any) {
+      if (e instanceof SyntaxError) return;
+      throw e;
+    }
+  };
+
+  const flushBufferedEvents = () => {
+    const normalized = buffer.replace(/\r\n/g, '\n');
+    const eventBlocks = normalized.split('\n\n');
+    buffer = eventBlocks.pop() || '';
+    for (const eventBlock of eventBlocks) {
+      processEvent(eventBlock);
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        // Final flush for any bytes buffered inside TextDecoder at stream end.
+        buffer += decoder.decode();
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      flushBufferedEvents();
+    }
+  } catch (readErr) {
+    streamReadError = readErr;
+    // Final flush even on read failure so already-received bytes can be parsed.
+    buffer += decoder.decode();
+  }
+
+  flushBufferedEvents();
+  if (buffer.trim()) {
+    processEvent(buffer);
+    buffer = '';
+  }
+
+  const shouldPropagateStreamError =
+    Boolean(streamReadError) && !receivedDone && !receivedFirstDelta && replies.length === 0;
+
+  if (shouldPropagateStreamError) {
+    throw streamReadError;
   }
 
   console.log(`[sendMessageStream] 流结束: characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);

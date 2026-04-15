@@ -30,6 +30,25 @@ interface ChatRequestBody {
   characterId?: number;
 }
 
+/**
+ * Prepare an SSE response for browsers and reverse proxies, disable common
+ * buffering behaviors, and send an initial comment + ready event so the
+ * client can confirm the stream is established immediately.
+ */
+function setupSSE(res: Response): void {
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.socket?.setTimeout(0);
+  res.socket?.setNoDelay(true);
+  res.socket?.setKeepAlive(true);
+  res.flushHeaders();
+  res.write(': connected\n\n');
+  res.write('event: ready\ndata: {"ok":true}\n\n');
+}
+
 chatRouter.post('/chat', async (req: Request, res: Response) => {
   const totalStart = Date.now();
   try {
@@ -149,14 +168,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         const recentMessages = messages.slice(-memoryConfig.recentMessageLimit);
         const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
 
-        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-        res.setHeader('Cache-Control', 'no-cache, no-transform');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('X-Accel-Buffering', 'no');
-        res.flushHeaders();
-
-        // Send ready event immediately
-        res.write('event: ready\ndata: {"ok":true}\n\n');
+        setupSSE(res);
         console.log(`[Chat/Stream][degraded] ready 已发送`);
 
         const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
@@ -217,14 +229,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     }
 
     // SSE headers
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    // Send ready event immediately so the client knows connection is established
-    res.write('event: ready\ndata: {"ok":true}\n\n');
+    setupSSE(res);
     console.log(`[Chat/Stream] ready 已发送, characterId=${characterId}, userId=${reqUserId}`);
 
     // Heartbeat to keep connection alive through proxies
@@ -359,6 +364,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     } else {
       try {
         res.write(`data: ${JSON.stringify({ error: '服务器内部错误' })}\n\n`);
+        res.write('data: [DONE]\n\n');
         res.end();
       } catch {
         // Client already disconnected, nothing to do
