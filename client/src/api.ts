@@ -24,6 +24,8 @@ interface AuthResponsePayload {
 
 function parseJsonText(text: string): unknown {
   if (!text) return null;
+  // Callers intentionally handle invalid JSON so they can fall back to
+  // proxy-safe error messages or partial stream recovery behavior.
   return JSON.parse(text);
 }
 
@@ -340,7 +342,10 @@ export async function sendMessageStream(
     buffer = '';
   }
 
-  if (streamReadError && !receivedDone && !receivedFirstDelta && replies.length === 0) {
+  const shouldPropagateStreamError =
+    Boolean(streamReadError) && !receivedDone && !receivedFirstDelta && replies.length === 0;
+
+  if (shouldPropagateStreamError) {
     throw streamReadError;
   }
 

@@ -35,7 +35,7 @@ interface ChatRequestBody {
  * buffering behaviors, and send an initial comment + ready event so the
  * client can confirm the stream is established immediately.
  */
-function setupSSE(res: Response) {
+function setupSSE(res: Response): void {
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
