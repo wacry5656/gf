@@ -74,7 +74,9 @@ async function send() {
 
   // 保存用户消息到数据库
   if (props.character.id) {
-    saveMessage(props.character.id, 'user', text, props.userId).catch(() => {})
+    saveMessage(props.character.id, 'user', text, props.userId).catch((e) => {
+      console.error('[ChatWindow] 保存用户消息失败:', e)
+    })
   }
 
   try {
