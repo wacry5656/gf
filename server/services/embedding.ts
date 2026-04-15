@@ -11,10 +11,15 @@ const embeddingCache = new Map<string, number[]>();
 const MAX_CACHE_SIZE = 500;
 
 export async function getEmbedding(text: string): Promise<number[]> {
-  // 检查缓存
+  // 检查缓存（命中时重新插入以模拟 LRU 行为）
   const cacheKey = text.trim();
   const cached = embeddingCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    // 重新插入使其成为最新条目（LRU 近似）
+    embeddingCache.delete(cacheKey);
+    embeddingCache.set(cacheKey, cached);
+    return cached;
+  }
 
   const apiKey = process.env.EMBEDDING_API_KEY || process.env.QWEN_API_KEY;
   const baseUrl =
