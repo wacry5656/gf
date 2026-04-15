@@ -164,11 +164,18 @@ export async function sendMessageStream(
   onDelta: (content: string) => void,
   userId: number
 ): Promise<string[]> {
-  const res = await fetch('/api/chat/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ character, messages, characterId: character.id, userId }),
-  });
+  const url = '/api/chat/stream';
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ character, messages, characterId: character.id, userId }),
+    });
+  } catch (networkErr: any) {
+    console.error(`[sendMessageStream] 网络错误: url=${url}, characterId=${character.id}, userId=${userId}`, networkErr);
+    throw new Error(`网络连接失败，请检查网络后重试 (${networkErr?.message || '未知错误'})`);
+  }
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
