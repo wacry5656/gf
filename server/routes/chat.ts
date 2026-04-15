@@ -352,7 +352,6 @@ async function buildChatContext(
 interface SystemPromptParams {
   character: ChatRequestBody['character'];
   personalitySummary?: string;
-  userSummary?: string;
   emotionPrompt?: string;
 }
 
@@ -361,7 +360,7 @@ interface SystemPromptParams {
  *
  * 整合：角色设定 + 女友人格 + 情绪状态 + 行为约束
  */
-function buildSystemPrompt({ character, personalitySummary, userSummary, emotionPrompt }: SystemPromptParams): string {
+function buildSystemPrompt({ character, personalitySummary, emotionPrompt }: SystemPromptParams): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
 
   // 可选段落
