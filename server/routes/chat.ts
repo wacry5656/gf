@@ -125,12 +125,12 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     const characterId = req.body.characterId || character?.id;
     const reqUserId = req.body.userId;
 
-    console.log(`[Chat/Stream] 收到请求: characterId=${characterId ?? '未提供'}, userId=${reqUserId ?? '未提供'}`);
-
     if (!character || !messages || !Array.isArray(messages)) {
       res.status(400).json({ error: '请求参数不完整' });
       return;
     }
+
+    console.log(`[Chat/Stream] 收到请求: characterId=${characterId ?? '未提供'}, userId=${reqUserId ?? '未提供'}`);
 
     // 角色归属权限校验
     if (characterId) {
@@ -199,14 +199,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     // 构建四层上下文（已优化为并行获取）
     const contextStart = Date.now();
-    let fullMessages: ChatMessage[];
-    try {
-      fullMessages = await buildChatContext(character, messages, characterId);
-      console.log(`[Chat/Stream] buildChatContext 成功, 消息数=${fullMessages.length}, 耗时=${Date.now() - contextStart}ms`);
-    } catch (ctxErr: any) {
-      console.error(`[Chat/Stream] buildChatContext 失败:`, ctxErr);
-      throw ctxErr;
-    }
+    const fullMessages = await buildChatContext(character, messages, characterId);
+    console.log(`[Chat/Stream] buildChatContext 成功, 消息数=${fullMessages.length}, 耗时=${Date.now() - contextStart}ms`);
 
     // 获取用户输入用于动态 max_tokens
     const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
