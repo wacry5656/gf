@@ -110,10 +110,6 @@ function getInterruptedStreamError(
   replies: string[],
   cause?: unknown
 ): StreamChatError {
-  if (cause instanceof StreamChatError) {
-    return cause;
-  }
-
   if (receivedFirstDelta || replies.length > 0) {
     return createStreamStageError(
       'after-partial',
