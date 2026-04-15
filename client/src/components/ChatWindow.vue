@@ -74,7 +74,7 @@ async function send() {
 
   // 保存用户消息到数据库
   if (props.character.id) {
-    saveMessage(props.character.id, 'user', text).catch(() => {})
+    saveMessage(props.character.id, 'user', text, props.userId).catch(() => {})
   }
 
   try {
@@ -94,7 +94,8 @@ async function send() {
           { role: 'assistant', content: streamContent }
         ])
         scrollToBottom()
-      }
+      },
+      props.userId
     )
 
     // Replace streaming message with cleaned/split replies
@@ -104,20 +105,11 @@ async function send() {
         finalMessages.push({ role: 'assistant', content: reply })
       }
       emit('update:messages', finalMessages)
-
-      // 保存每条 AI 回复到数据库
-      if (props.character.id) {
-        for (const reply of replies) {
-          saveMessage(props.character.id, 'assistant', reply).catch(() => {})
-        }
-      }
     } else if (streamContent) {
       // Fallback: no split replies received, use raw stream content
       emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
-      if (props.character.id) {
-        saveMessage(props.character.id, 'assistant', streamContent).catch(() => {})
-      }
     }
+    // AI 回复由服务端兜底保存，前端不再重复保存
     // 刷新情绪和关系标签
     fetchStatus()
   } catch (e: any) {
@@ -133,7 +125,7 @@ async function send() {
 async function onClearHistory() {
   if (!props.character.id) return
   try {
-    await clearMessages(props.character.id)
+    await clearMessages(props.character.id, props.userId)
     emit('update:messages', [])
   } catch {
     error.value = '清空失败'

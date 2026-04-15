@@ -137,11 +137,8 @@ export function updateRelationshipState(
     matched = true;
   }
 
-  // 规则5：长期稳定互动 — 没有触发负面规则时微量正向漂移
-  if (!matched) {
-    comfort_level += 0.005;
-    trust += 0.003;
-  }
+  // 规则5：中性聊天 — 不改变关系状态（不再自动升温）
+  // 只有明确正向互动（亲密、关心）才提升关系
 
   // clamp 所有分值
   closeness = clamp(closeness);
