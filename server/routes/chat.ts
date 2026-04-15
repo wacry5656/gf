@@ -5,6 +5,7 @@ import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
 import { maybeExtractPersonality, getUserIdFromCharacter, getPersonalityTraits } from '../services/personality';
 import { getEmotionState, updateEmotionState, buildEmotionPrompt } from '../services/emotion';
+import { getRelationshipState, updateRelationshipState, buildRelationshipPrompt } from '../services/relationship';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
 
@@ -53,7 +54,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     const cleaned = cleanReply(rawReply);
     const replies = splitReply(cleaned);
 
-    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取 + 情绪更新（都不阻塞响应）
+    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取 + 情绪更新 + 关系更新（都不阻塞响应）
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
@@ -67,10 +68,11 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       }
       maybeUpdateSummary(characterId);
       maybeExtractPersonality(characterId).catch(() => {});
-      // 情绪更新（fire-and-forget）
+      // 情绪 + 关系更新（fire-and-forget）
       const userId = getUserIdFromCharacter(characterId);
       if (userId && currentUserText) {
         try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
+        try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
       }
     }
 
@@ -150,7 +152,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
 
-    // Async: write memory + plan detection + summary + personality + emotion (same as non-streaming)
+    // Async: write memory + plan detection + summary + personality + emotion + relationship (same as non-streaming)
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
@@ -164,10 +166,11 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       }
       maybeUpdateSummary(characterId);
       maybeExtractPersonality(characterId).catch(() => {});
-      // 情绪更新（fire-and-forget）
+      // 情绪 + 关系更新（fire-and-forget）
       const userId = getUserIdFromCharacter(characterId);
       if (userId && currentUserText) {
         try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
+        try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
       }
     }
   } catch (err: any) {
@@ -223,12 +226,12 @@ async function buildChatContext(
 
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
 
-  // ---- 并行获取 summary、memories、personality 和 emotion ----
+  // ---- 并行获取 summary、memories、personality、emotion 和 relationship ----
   let summaryElapsed = 0;
   let memoryElapsed = 0;
   let personalityElapsed = 0;
 
-  const [summaryResult, memoriesResult, personalityResult, emotionResult] = await Promise.all([
+  const [summaryResult, memoriesResult, personalityResult, emotionResult, relationshipResult] = await Promise.all([
     // 层3：summary（同步函数，包装成 Promise，独立计时）
     ((): Promise<string | null> => {
       const t0 = Date.now();
@@ -270,6 +273,16 @@ async function buildChatContext(
         return Promise.resolve(null);
       }
     })(),
+    // relationship state（同步函数，包装成 Promise）
+    ((): Promise<import('../services/relationship').RelationshipState | null> => {
+      try {
+        const userId = getUserIdFromCharacter(characterId);
+        if (!userId) return Promise.resolve(null);
+        return Promise.resolve(getRelationshipState(userId, characterId));
+      } catch {
+        return Promise.resolve(null);
+      }
+    })(),
   ]);
 
   console.log(`[Perf] 获取 summary 耗时: ${summaryElapsed}ms`);
@@ -290,11 +303,18 @@ async function buildChatContext(
     emotionPrompt = buildEmotionPrompt(emotionResult);
   }
 
-  // ---- 统一构建 system prompt（personality + emotion 融合在内） ----
+  // ---- 构建 relationship prompt 文本 ----
+  let relationshipPrompt: string | undefined;
+  if (relationshipResult) {
+    relationshipPrompt = buildRelationshipPrompt(relationshipResult);
+  }
+
+  // ---- 统一构建 system prompt（personality + emotion + relationship 融合在内） ----
   let systemContent = buildSystemPrompt({
     character,
     personalitySummary,
     emotionPrompt,
+    relationshipPrompt,
   });
 
   // ---- 层3：summary block（追加到 system prompt 后）----
@@ -353,14 +373,15 @@ interface SystemPromptParams {
   character: ChatRequestBody['character'];
   personalitySummary?: string;
   emotionPrompt?: string;
+  relationshipPrompt?: string;
 }
 
 /**
  * 构建统一的 system prompt（单一入口，不允许碎片拼接）
  *
- * 整合：角色设定 + 女友人格 + 情绪状态 + 行为约束
+ * 整合：角色设定 + 女友人格 + 关系状态 + 情绪状态 + 行为约束
  */
-function buildSystemPrompt({ character, personalitySummary, emotionPrompt }: SystemPromptParams): string {
+function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relationshipPrompt }: SystemPromptParams): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
 
   // 可选段落
@@ -368,28 +389,31 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt }: Sys
     ? `\n【用户长期特征】\n${personalitySummary}\n`
     : '';
 
+  const relationshipBlock = relationshipPrompt
+    ? `\n【关系状态】\n${relationshipPrompt}\n`
+    : '';
+
   const emotionBlock = emotionPrompt
-    ? `\n【当前情绪状态】\n${emotionPrompt}\n`
+    ? `\n【当前情绪】\n${emotionPrompt}\n`
     : '';
 
   return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
 
 你是用户的虚拟女友。
 
-你们默认是恋人关系，关系亲密、自然。
-不要把自己称为朋友、同学或普通网友。
+你们默认是恋人关系，熟悉、亲近、自然，不要把自己当朋友或普通网友。
 
-聊天风格要求：
-- 像微信私聊，不是写小说，不是演剧本
-- 语气自然、简洁、有情绪，但不过度表演
-- 不要长篇大论
-- 不要机械重复"我是你女友"
-${personalityBlock}${emotionBlock}
+聊天风格：
+- 像微信私聊，简洁自然
+- 有情绪，但不过度表达
+- 不写长段，不演戏
+${personalityBlock}${relationshipBlock}${emotionBlock}
 行为约束：
-- 情绪要体现在语气里，而不是直接说出来
+- 关系会持续发展，越亲近越自然主动，越信任越真实表达
+- 情绪会受之前互动影响，变化要连续，不要突然跳变
+- 情绪体现在语气里，不要直接说破
 - 可以温柔、调侃、在意、轻微吃醋，但要克制
-- 不要无理取闹或攻击用户
-- 不要突然改变关系设定
+- 不要无理取闹，不要攻击用户，不要突然改成朋友设定
 
 ===== 核心对话逻辑（每次回复前必须隐式执行） =====
 

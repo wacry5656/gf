@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
 import { readEmotionState, type Mood } from '../services/emotion';
+import { readRelationshipState, type RelationshipPhase } from '../services/relationship';
 
 export const dataRouter = Router();
 
@@ -77,6 +78,7 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
       db.prepare('DELETE FROM memories WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM emotion_state WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM relationship_state WHERE character_id = ?').run(charId);
       // 删除角色记录（额外检查 user_id 作为安全防护，防止 TOCTOU 竞态）
       const result = db.prepare('DELETE FROM characters WHERE id = ? AND user_id = ?').run(charId, userId);
       // 如果用户已无其他角色，清理其 personality_memory
@@ -211,5 +213,61 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Get emotion error:', err?.message);
     res.status(500).json({ error: '获取情绪状态失败' });
+  }
+});
+
+// ====== 关系状态 ======
+
+const PHASE_LABEL: Record<RelationshipPhase, string> = {
+  close: '熟悉',
+  attached: '亲近',
+  deep_attached: '深度依恋',
+  strained: '有点别扭',
+};
+
+dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : null;
+    if (!characterId || !userId) {
+      res.status(400).json({ error: '缺少参数' });
+      return;
+    }
+
+    // 权限校验：检查角色是否存在且属于当前用户
+    const character = db.prepare(
+      'SELECT id, user_id FROM characters WHERE id = ?'
+    ).get(characterId) as { id: number; user_id: number } | undefined;
+
+    if (!character) {
+      res.status(404).json({ error: '角色不存在' });
+      return;
+    }
+    if (character.user_id !== userId) {
+      res.status(403).json({ error: '无权访问该角色的关系状态' });
+      return;
+    }
+
+    // 只读获取，不隐式创建
+    const state = readRelationshipState(userId, characterId);
+    if (!state) {
+      res.json({
+        phase: 'close',
+        phaseLabel: PHASE_LABEL['close'],
+        closeness: 0.5,
+        trust: 0.5,
+      });
+      return;
+    }
+
+    res.json({
+      phase: state.phase,
+      phaseLabel: PHASE_LABEL[(state.phase as RelationshipPhase) || 'close'] || '熟悉',
+      closeness: state.closeness,
+      trust: state.trust,
+    });
+  } catch (err: any) {
+    console.error('Get relationship error:', err?.message);
+    res.status(500).json({ error: '获取关系状态失败' });
   }
 });

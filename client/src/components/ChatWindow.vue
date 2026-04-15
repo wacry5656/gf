@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted } from 'vue'
 import type { Character, ChatMessage } from '../api'
-import { sendMessageStream, saveMessage, clearMessages, getEmotion } from '../api'
+import { sendMessageStream, saveMessage, clearMessages, getEmotion, getRelationship } from '../api'
 
 const props = defineProps<{
   character: Character
@@ -19,6 +19,7 @@ const streaming = ref(false)
 const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 const moodLabel = ref('')
+const phaseLabel = ref('')
 
 async function fetchEmotion() {
   if (!props.character?.id || !props.userId) {
@@ -30,10 +31,24 @@ async function fetchEmotion() {
   else moodLabel.value = ''
 }
 
-onMounted(fetchEmotion)
+async function fetchRelationship() {
+  if (!props.character?.id || !props.userId) {
+    phaseLabel.value = ''
+    return
+  }
+  const info = await getRelationship(props.character.id, props.userId)
+  if (info) phaseLabel.value = info.phaseLabel
+  else phaseLabel.value = ''
+}
 
-watch(() => props.character?.id, fetchEmotion)
-watch(() => props.userId, fetchEmotion)
+async function fetchStatus() {
+  await Promise.all([fetchEmotion(), fetchRelationship()])
+}
+
+onMounted(fetchStatus)
+
+watch(() => props.character?.id, fetchStatus)
+watch(() => props.userId, fetchStatus)
 
 function scrollToBottom() {
   nextTick(() => {
@@ -103,8 +118,8 @@ async function send() {
         saveMessage(props.character.id, 'assistant', streamContent).catch(() => {})
       }
     }
-    // 刷新情绪标签
-    fetchEmotion()
+    // 刷新情绪和关系标签
+    fetchStatus()
   } catch (e: any) {
     error.value = e.message || '发送失败'
     // Remove placeholder on error
@@ -138,6 +153,7 @@ function handleKeydown(e: KeyboardEvent) {
     <div class="chat-info">
       正在与「<strong>{{ character.name }}</strong>」聊天
       <span v-if="moodLabel" class="emotion-tag">{{ moodLabel }}</span>
+      <span v-if="phaseLabel" class="relation-tag">{{ phaseLabel }}</span>
       <span class="chat-personality">— {{ character.personality }}</span>
       <button v-if="messages.length > 0" class="btn-clear" @click="onClearHistory">清空记录</button>
     </div>
@@ -218,6 +234,16 @@ function handleKeydown(e: KeyboardEvent) {
   padding: 2px 8px;
   border-radius: 10px;
   margin-left: 8px;
+}
+
+.relation-tag {
+  display: inline-block;
+  background: #fff0f6;
+  color: #e91e8c;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 4px;
 }
 
 .btn-clear {
