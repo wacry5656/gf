@@ -128,6 +128,25 @@ export async function getEmotion(characterId: number, userId: number): Promise<E
   }
 }
 
+// ====== 关系状态 ======
+
+export interface RelationshipInfo {
+  phase: string;
+  phaseLabel: string;
+  closeness: number;
+  trust: number;
+}
+
+export async function getRelationship(characterId: number, userId: number): Promise<RelationshipInfo | null> {
+  try {
+    const res = await fetch(`/api/data/relationship/${characterId}?userId=${userId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 // ====== 流式聊天 ======
 
 export async function sendMessageStream(

@@ -8,8 +8,10 @@
  *   - 增强型：不修改/削弱已有 memory / summary / 向量检索 / personality
  *   - 纯规则引擎：轻量关键词匹配，无 LLM 调用
  *   - fire-and-forget 更新：不阻塞聊天响应
+ *   - 情绪变化参考 relationship_state，使变化更连续合理
  */
 import db from '../db';
+import { readRelationshipState } from './relationship';
 
 // ========== 类型定义 ==========
 
@@ -84,6 +86,12 @@ export function getEmotionState(userId: number, characterId: number): EmotionSta
 
 /**
  * 根据用户输入和 AI 回复做轻量规则更新（纯规则引擎，不调用大模型）
+ *
+ * 情绪变化参考 relationship_state：
+ * - closeness 高时：更容易保持 warm/caring/shy，不容易因一句冷淡话直接变 distant
+ * - trust 高时：upset/jealous 时也更克制，更容易回到 warm
+ * - trust 低或 comfort_level 低时：更容易偏 distant/upset
+ * - jealousy 高但 closeness 高时：更偏"轻微在意"，不变攻击性吃醋
  */
 export function updateEmotionState(
   userId: number,
@@ -93,9 +101,19 @@ export function updateEmotionState(
 ): void {
   const state = getEmotionState(userId, characterId);
 
+  // 读取关系状态用于融合（只读，不创建）
+  const rel = readRelationshipState(userId, characterId);
+  const closeness = rel?.closeness ?? 0.5;
+  const relTrust = rel?.trust ?? 0.5;
+  const comfortLevel = rel?.comfort_level ?? 0.5;
+
   let { affection, trust_score, jealousy_score, stability_score, mood } = state;
   let trigger: string | null = state.last_trigger;
   let moodChanged = false;
+
+  // 防止单字（如"嗯""哦"）直接触发负面情绪
+  const trimmed = userInput.trim();
+  const isTooShort = trimmed.length <= 1;
 
   // 规则1：亲密表达
   if (containsAny(userInput, INTIMATE_KEYWORDS)) {
@@ -106,11 +124,18 @@ export function updateEmotionState(
     moodChanged = true;
   }
 
-  // 规则2：冷淡/攻击
-  if (containsAny(userInput, COLD_KEYWORDS)) {
-    affection -= 0.04;
-    trust_score -= 0.05;
-    mood = pickMood(['upset', 'distant'], mood, stability_score);
+  // 规则2：冷淡/攻击（单字不触发）
+  if (!isTooShort && containsAny(userInput, COLD_KEYWORDS)) {
+    // closeness 高时减弱负面影响
+    const dampening = closeness >= 0.7 ? 0.5 : 1.0;
+    affection -= 0.04 * dampening;
+    trust_score -= 0.05 * dampening;
+    // trust 高时不容易直接变 distant
+    if (relTrust >= 0.6) {
+      mood = pickMood(['upset'], mood, stability_score);
+    } else {
+      mood = pickMood(['upset', 'distant'], mood, stability_score);
+    }
     trigger = '冷淡或攻击表达';
     moodChanged = true;
   }
@@ -118,7 +143,12 @@ export function updateEmotionState(
   // 规则3：第三者/其他异性话题
   if (containsAny(userInput, JEALOUSY_KEYWORDS)) {
     jealousy_score += 0.08;
-    mood = pickMood(['jealous', 'upset'], mood, stability_score);
+    // closeness 高时偏"轻微在意"，不变攻击性吃醋
+    if (closeness >= 0.6) {
+      mood = pickMood(['jealous', 'shy'], mood, stability_score);
+    } else {
+      mood = pickMood(['jealous', 'upset'], mood, stability_score);
+    }
     trigger = '第三者话题';
     moodChanged = true;
   }
@@ -139,8 +169,20 @@ export function updateEmotionState(
 
   // 情绪稳定机制：没有明显触发时不改 mood
   if (!moodChanged) {
-    // 只做微调衰减，不变 mood
-    affection += 0.001; // 微弱正向漂移
+    // 微弱正向漂移
+    affection += 0.001;
+    // trust 高时更容易回到 warm
+    if (relTrust >= 0.65 && (mood === 'upset' || mood === 'distant')) {
+      if (Math.random() < 0.3) {
+        mood = 'warm';
+        trigger = '自然回温';
+      }
+    }
+  }
+
+  // comfort_level 低时更容易偏 distant
+  if (comfortLevel < 0.35 && !moodChanged && Math.random() < 0.2) {
+    mood = 'distant';
   }
 
   // clamp 所有分值
@@ -158,31 +200,20 @@ export function updateEmotionState(
 }
 
 /**
- * 构建情绪 prompt 片段（~120 字），插入 system prompt
+ * 构建情绪 prompt 片段（1 句话，省 token）
  */
 export function buildEmotionPrompt(state: EmotionState): string {
   const moodMap: Record<Mood, string> = {
-    warm: '她现在和用户的互动是自然亲近的，像熟悉恋人的日常聊天。语气可以更温柔或稍微有点在意，但要克制自然，不要直接把情绪说破。',
-    happy: '她现在心情不错，互动会更轻快主动一点。语气自然愉悦，但不要浮夸或用力过猛。',
-    playful: '她现在有点想逗用户，语气略带俏皮。可以开小玩笑，但保持自然不刻意。',
-    shy: '她现在有一点害羞，语气稍微收一点但依然亲近。表达上会含蓄一些，不要太直白。',
-    caring: '她现在更愿意照顾用户情绪，语气更体贴温和。关心自然流露，不要刻意强调。',
-    upset: '她现在有点委屈或不开心，语气克制地带一点情绪。不要直接发脾气或无理取闹。',
-    jealous: '她现在会有一点在意和试探，语气带轻微吃醋感。不要攻击性太强，保持克制。',
-    distant: '她现在稍微收着一点，不像平时那么主动热情。保持交流但语气偏平淡。',
+    warm: '她现在和用户的互动是自然亲近的，语气温柔但不刻意。',
+    happy: '她现在心情不错，回复会更轻快主动一点。',
+    playful: '她现在有点想逗用户，语气可以稍微俏皮一点。',
+    shy: '她现在有一点害羞，语气会稍微收一点，但依然亲近。',
+    caring: '她现在更愿意照顾用户情绪，语气更柔和体贴。',
+    upset: '她现在有点委屈或不开心，语气克制地带一点情绪。',
+    jealous: '她现在会有一点在意和试探，但不会直接说破。',
+    distant: '她现在会稍微收着一点，不会像平时那么主动热情。',
   };
 
   const mood = state.mood || 'warm';
-  let text = moodMap[mood] || moodMap.warm;
-
-  // 附加修饰（精简，避免 token 膨胀）
-  const extras: string[] = [];
-  if (state.affection >= 0.7) extras.push('整体语气更自然亲密。');
-  else if (state.affection <= 0.3) extras.push('语气偏平淡克制。');
-  if (state.trust_score >= 0.7) extras.push('她更愿意表达真实感受。');
-  if (state.jealousy_score >= 0.3) extras.push('对第三者话题会更敏感一些。');
-
-  if (extras.length > 0) text += extras.join('');
-
-  return text;
+  return moodMap[mood] || moodMap.warm;
 }

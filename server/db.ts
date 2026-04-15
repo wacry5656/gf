@@ -100,6 +100,22 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (character_id) REFERENCES characters(id)
   );
+
+  CREATE TABLE IF NOT EXISTS relationship_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    closeness REAL DEFAULT 0.5,
+    trust REAL DEFAULT 0.5,
+    dependence REAL DEFAULT 0.3,
+    comfort_level REAL DEFAULT 0.5,
+    phase TEXT DEFAULT 'close',
+    last_event TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, character_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
 `);
 
 // ========== 兼容性迁移 ==========
