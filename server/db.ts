@@ -84,6 +84,22 @@ db.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS emotion_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    mood TEXT DEFAULT 'warm',
+    affection REAL DEFAULT 0.5,
+    trust_score REAL DEFAULT 0.5,
+    jealousy_score REAL DEFAULT 0.0,
+    stability_score REAL DEFAULT 0.8,
+    last_trigger TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, character_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
 `);
 
 // ========== 兼容性迁移 ==========

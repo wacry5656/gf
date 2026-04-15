@@ -108,6 +108,26 @@ export async function clearMessages(characterId: number): Promise<void> {
   await fetch(`/api/data/messages/${characterId}`, { method: 'DELETE' });
 }
 
+// ====== 情绪状态 ======
+
+export interface EmotionInfo {
+  mood: string;
+  moodLabel: string;
+  affection: number;
+  trust_score: number;
+  jealousy_score: number;
+}
+
+export async function getEmotion(characterId: number, userId: number): Promise<EmotionInfo | null> {
+  try {
+    const res = await fetch(`/api/data/emotion/${characterId}?userId=${userId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 // ====== 流式聊天 ======
 
 export async function sendMessageStream(

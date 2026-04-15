@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue'
+import { ref, nextTick, watch, onMounted } from 'vue'
 import type { Character, ChatMessage } from '../api'
-import { sendMessageStream, saveMessage, clearMessages } from '../api'
+import { sendMessageStream, saveMessage, clearMessages, getEmotion } from '../api'
 
 const props = defineProps<{
   character: Character
   messages: ChatMessage[]
+  userId?: number
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +18,15 @@ const loading = ref(false)
 const streaming = ref(false)
 const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
+const moodLabel = ref('')
+
+async function fetchEmotion() {
+  if (!props.character.id || !props.userId) return
+  const info = await getEmotion(props.character.id, props.userId)
+  if (info) moodLabel.value = info.moodLabel
+}
+
+onMounted(fetchEmotion)
 
 function scrollToBottom() {
   nextTick(() => {
@@ -86,6 +96,8 @@ async function send() {
         saveMessage(props.character.id, 'assistant', streamContent).catch(() => {})
       }
     }
+    // 刷新情绪标签
+    fetchEmotion()
   } catch (e: any) {
     error.value = e.message || '发送失败'
     // Remove placeholder on error
@@ -118,6 +130,7 @@ function handleKeydown(e: KeyboardEvent) {
   <div class="chat-container">
     <div class="chat-info">
       正在与「<strong>{{ character.name }}</strong>」聊天
+      <span v-if="moodLabel" class="emotion-tag">{{ moodLabel }}</span>
       <span class="chat-personality">— {{ character.personality }}</span>
       <button v-if="messages.length > 0" class="btn-clear" @click="onClearHistory">清空记录</button>
     </div>
@@ -188,6 +201,16 @@ function handleKeydown(e: KeyboardEvent) {
 .chat-personality {
   color: #999;
   flex: 1;
+}
+
+.emotion-tag {
+  display: inline-block;
+  background: #f3f0ff;
+  color: #6c63ff;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
 }
 
 .btn-clear {

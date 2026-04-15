@@ -4,6 +4,7 @@ import { searchMemory, addMemory, shouldStoreAsMemory, recordMemoryHits } from '
 import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
 import { maybeExtractPersonality, getUserIdFromCharacter, getPersonalityTraits } from '../services/personality';
+import { getEmotionState, updateEmotionState, buildEmotionPrompt } from '../services/emotion';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
 
@@ -52,7 +53,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     const cleaned = cleanReply(rawReply);
     const replies = splitReply(cleaned);
 
-    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取（都不阻塞响应）
+    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取 + 情绪更新（都不阻塞响应）
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
@@ -66,6 +67,11 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       }
       maybeUpdateSummary(characterId);
       maybeExtractPersonality(characterId).catch(() => {});
+      // 情绪更新（fire-and-forget）
+      const userId = getUserIdFromCharacter(characterId);
+      if (userId && currentUserText) {
+        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch { /* ignore */ }
+      }
     }
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
@@ -144,7 +150,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
 
-    // Async: write memory + plan detection + summary + personality (same as non-streaming)
+    // Async: write memory + plan detection + summary + personality + emotion (same as non-streaming)
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
@@ -158,6 +164,11 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       }
       maybeUpdateSummary(characterId);
       maybeExtractPersonality(characterId).catch(() => {});
+      // 情绪更新（fire-and-forget）
+      const userId = getUserIdFromCharacter(characterId);
+      if (userId && currentUserText) {
+        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch { /* ignore */ }
+      }
     }
   } catch (err: any) {
     console.error('Chat stream error:', err?.message || err);
@@ -212,12 +223,12 @@ async function buildChatContext(
 
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
 
-  // ---- 并行获取 summary、memories 和 personality ----
+  // ---- 并行获取 summary、memories、personality 和 emotion ----
   let summaryElapsed = 0;
   let memoryElapsed = 0;
   let personalityElapsed = 0;
 
-  const [summaryResult, memoriesResult, personalityResult] = await Promise.all([
+  const [summaryResult, memoriesResult, personalityResult, emotionResult] = await Promise.all([
     // 层3：summary（同步函数，包装成 Promise，独立计时）
     ((): Promise<string | null> => {
       const t0 = Date.now();
@@ -248,6 +259,16 @@ async function buildChatContext(
       const result = getPersonalityTraits(userId);
       personalityElapsed = Date.now() - t0;
       return Promise.resolve(result);
+    })(),
+    // emotion state（同步函数，包装成 Promise）
+    ((): Promise<import('../services/emotion').EmotionState | null> => {
+      try {
+        const userId = getUserIdFromCharacter(characterId);
+        if (!userId) return Promise.resolve(null);
+        return Promise.resolve(getEmotionState(userId, characterId));
+      } catch {
+        return Promise.resolve(null);
+      }
     })(),
   ]);
 
@@ -306,8 +327,14 @@ async function buildChatContext(
     }
   }
 
+  // ---- emotion block ----
+  let emotionBlock = '';
+  if (emotionResult) {
+    emotionBlock = `\n【当前情绪状态】\n${buildEmotionPrompt(emotionResult)}\n`;
+  }
+
   const promptStart = Date.now();
-  systemContent += personalityBlock + summaryBlock + memoryBlock;
+  systemContent += personalityBlock + summaryBlock + memoryBlock + emotionBlock;
   console.log(`[Perf] prompt 构建耗时: ${Date.now() - promptStart}ms`);
 
   return [{ role: 'system', content: systemContent }, ...recentMessages];

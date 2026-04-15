@@ -127,6 +127,7 @@ function goBack() {
         <ChatWindow
           v-else-if="activeCharacter"
           :character="activeCharacter"
+          :user-id="user.userId"
           v-model:messages="chatMessages"
         />
 
