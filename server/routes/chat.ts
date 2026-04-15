@@ -43,12 +43,13 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
 
     // 角色归属权限校验
     if (characterId) {
-      const userId = getUserIdFromCharacter(characterId);
-      if (userId) {
-        const reqUserId = req.body.userId ?? userId;
-        const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
-        if (!ok) return;
+      const reqUserId = req.body.userId;
+      if (!reqUserId) {
+        res.status(400).json({ error: '缺少 userId 参数' });
+        return;
       }
+      const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
+      if (!ok) return;
     }
 
     // 构建四层上下文（已优化为并行获取）
@@ -113,12 +114,13 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     // 角色归属权限校验
     if (characterId) {
-      const userId = getUserIdFromCharacter(characterId);
-      if (userId) {
-        const reqUserId = req.body.userId ?? userId;
-        const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
-        if (!ok) return;
+      const reqUserId = req.body.userId;
+      if (!reqUserId) {
+        res.status(400).json({ error: '缺少 userId 参数' });
+        return;
       }
+      const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
+      if (!ok) return;
     }
 
     // SSE headers

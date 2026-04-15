@@ -44,12 +44,13 @@ export async function login(username: string, password: string): Promise<User> {
 
 export async function sendMessage(
   character: Character,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  userId?: number
 ): Promise<string[]> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ character, messages, characterId: character.id }),
+    body: JSON.stringify({ character, messages, characterId: character.id, userId }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -156,12 +157,13 @@ export async function getRelationship(characterId: number, userId: number): Prom
 export async function sendMessageStream(
   character: Character,
   messages: ChatMessage[],
-  onDelta: (content: string) => void
+  onDelta: (content: string) => void,
+  userId?: number
 ): Promise<string[]> {
   const res = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ character, messages, characterId: character.id }),
+    body: JSON.stringify({ character, messages, characterId: character.id, userId }),
   });
 
   if (!res.ok) {

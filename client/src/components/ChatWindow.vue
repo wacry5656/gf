@@ -94,7 +94,8 @@ async function send() {
           { role: 'assistant', content: streamContent }
         ])
         scrollToBottom()
-      }
+      },
+      props.userId
     )
 
     // Replace streaming message with cleaned/split replies
@@ -104,16 +105,11 @@ async function send() {
         finalMessages.push({ role: 'assistant', content: reply })
       }
       emit('update:messages', finalMessages)
-
-      // AI 回复由服务端兜底保存，前端不再重复保存
-      
     } else if (streamContent) {
       // Fallback: no split replies received, use raw stream content
       emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
-      if (props.character.id) {
-        // AI 回复由服务端兜底保存，前端不再重复保存
-      }
     }
+    // AI 回复由服务端兜底保存，前端不再重复保存
     // 刷新情绪和关系标签
     fetchStatus()
   } catch (e: any) {

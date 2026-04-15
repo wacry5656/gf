@@ -137,11 +137,13 @@ dataRouter.post('/messages', (req: Request, res: Response) => {
       return;
     }
 
-    // userId 可能来自 body，如果没有则跳过归属校验（向后兼容）
-    if (userId) {
-      const { ok } = ensureCharacterOwnership(Number(characterId), Number(userId), res);
-      if (!ok) return;
+    // 归属校验（userId 必传）
+    if (!userId) {
+      res.status(400).json({ error: '缺少 userId 参数' });
+      return;
     }
+    const { ok } = ensureCharacterOwnership(Number(characterId), Number(userId), res);
+    if (!ok) return;
 
     db.prepare(
       'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
