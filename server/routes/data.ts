@@ -64,7 +64,9 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
     ).get(charId) as { id: number; user_id: number } | undefined;
 
     if (!character) {
-      res.status(404).json({ error: '角色不存在' });
+      // 角色已不存在，返回合理响应（幂等）
+      console.warn(`[DeleteCharacter] charId=${charId} 已不存在`);
+      res.json({ success: true, deletedId: charId, message: '角色已不存在' });
       return;
     }
 
@@ -74,6 +76,7 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
     }
 
     // 使用事务确保级联删除的原子性
+    // 按依赖顺序先删所有引用 character_id 的表数据
     const deleteAll = db.transaction(() => {
       db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM memories WHERE character_id = ?').run(charId);
@@ -101,6 +104,11 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
 
     res.json({ success: true, deletedId: charId });
   } catch (err: any) {
+    if (err?.message?.includes('FOREIGN KEY constraint failed')) {
+      console.error(`[DeleteCharacter] 外键约束失败: ${err.message}`);
+      res.status(500).json({ error: '删除角色失败：存在关联数据未清理，请联系管理员' });
+      return;
+    }
     console.error('Delete character error:', err?.message);
     res.status(500).json({ error: '删除角色失败' });
   }
@@ -124,7 +132,8 @@ dataRouter.get('/messages/:characterId', (req: Request, res: Response) => {
     res.json({ messages });
   } catch (err: any) {
     console.error('Get messages error:', err?.message);
-    res.status(500).json({ error: '获取聊天记录失败' });
+    // 读取消息失败时返回空数组而不是崩溃（可能是脏数据/旧角色）
+    res.json({ messages: [] });
   }
 });
 
@@ -139,11 +148,23 @@ dataRouter.post('/messages', (req: Request, res: Response) => {
 
     // 归属校验（userId 必传）
     if (!userId) {
-      res.status(400).json({ error: '缺少 userId 参数' });
+      res.status(401).json({ error: '请重新登录（缺少用户身份）' });
       return;
     }
-    const { ok } = ensureCharacterOwnership(Number(characterId), Number(userId), res);
-    if (!ok) return;
+
+    // 先检查角色是否存在，避免外键约束错误
+    const character = db.prepare('SELECT id, user_id FROM characters WHERE id = ?').get(Number(characterId)) as { id: number; user_id: number } | undefined;
+    if (!character) {
+      console.warn(`[SaveMessage] characterId=${characterId} 不存在，跳过保存`);
+      res.status(404).json({ error: '角色不存在，消息未保存' });
+      return;
+    }
+
+    if (character.user_id !== Number(userId)) {
+      console.warn(`[SaveMessage] 角色归属校验失败: characterId=${characterId}, userId=${userId}, owner=${character.user_id}`);
+      res.status(403).json({ error: '无权操作该角色' });
+      return;
+    }
 
     db.prepare(
       'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
@@ -151,6 +172,12 @@ dataRouter.post('/messages', (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (err: any) {
+    // 捕获外键约束错误并返回友好提示
+    if (err?.message?.includes('FOREIGN KEY constraint failed')) {
+      console.error('[SaveMessage] 外键约束失败，角色可能已被删除:', err.message);
+      res.status(409).json({ error: '角色已被删除，消息无法保存' });
+      return;
+    }
     console.error('Save message error:', err?.message);
     res.status(500).json({ error: '保存消息失败' });
   }

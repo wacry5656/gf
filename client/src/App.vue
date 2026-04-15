@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import type { Character, ChatMessage, User } from './api'
 import { getCharacters, createCharacter, deleteCharacter, getMessages } from './api'
+import { getCurrentUser, saveUser, clearUser } from './userSession'
 import LoginPage from './components/LoginPage.vue'
 import CharacterSetup from './components/CharacterSetup.vue'
 import ChatWindow from './components/ChatWindow.vue'
@@ -15,18 +16,16 @@ const loading = ref(false)
 
 // 初始化：检查本地存储的登录信息
 onMounted(() => {
-  const saved = localStorage.getItem('user')
+  const saved = getCurrentUser()
   if (saved) {
-    try {
-      user.value = JSON.parse(saved)
-      loadCharacters()
-    } catch (e) { console.error('[App] 解析本地用户数据失败:', e) }
+    user.value = saved
+    loadCharacters()
   }
 })
 
 function onLogin(u: User) {
   user.value = u
-  localStorage.setItem('user', JSON.stringify(u))
+  saveUser(u)
   loadCharacters()
 }
 
@@ -36,7 +35,7 @@ function onLogout() {
   chatMessages.value = []
   characters.value = []
   showNewCharacter.value = false
-  localStorage.removeItem('user')
+  clearUser()
 }
 
 async function loadCharacters() {

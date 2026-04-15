@@ -23,13 +23,21 @@ export function getMaxTokens(userInput: string): number {
 
 function getApiConfig() {
   const apiKey = process.env.QWEN_API_KEY;
-  const apiUrl = process.env.QWEN_API_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  const baseUrl = process.env.QWEN_BASE_URL;
   const model = process.env.QWEN_MODEL || 'qwen-turbo';
   const timeoutMs = Number(process.env.QWEN_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
   if (!apiKey || apiKey === 'your_api_key_here') {
+    console.error('[Qwen] QWEN_API_KEY 未配置或为默认值');
     throw new Error('请在 .env 文件中配置 QWEN_API_KEY');
   }
+
+  if (!baseUrl) {
+    console.error('[Qwen] QWEN_BASE_URL 未配置');
+    throw new Error('请在 .env 文件中配置 QWEN_BASE_URL（如 https://dashscope.aliyuncs.com/compatible-mode/v1）');
+  }
+
+  const apiUrl = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
   return { apiKey, apiUrl, model, timeoutMs };
 }
