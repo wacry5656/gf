@@ -49,6 +49,29 @@ app.use(express.json());
 app.use('/api', chatRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/data', dataRouter);
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API 接口不存在，请检查 /api 路径或反向代理配置' });
+});
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!req.originalUrl.startsWith('/api')) {
+    next(err);
+    return;
+  }
+
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+
+  if (err?.type === 'entity.parse.failed') {
+    res.status(400).json({ error: '请求体不是有效的 JSON' });
+    return;
+  }
+
+  const status = typeof err?.status === 'number' ? err.status : 500;
+  console.error('[API] 未处理异常:', err?.message || err);
+  res.status(status).json({ error: status >= 500 ? '服务器内部错误，请稍后重试' : '请求失败' });
+});
 
 // 生产环境：serve 前端静态文件
 const clientDist = path.join(__dirname, '..', 'client', 'dist');

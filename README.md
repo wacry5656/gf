@@ -142,6 +142,14 @@ server {
         proxy_read_timeout 3600s;
     }
 
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
@@ -150,6 +158,12 @@ server {
     }
 }
 ```
+
+关键点：
+
+- `/api/auth/*`、`/api/data/*`、`/api/chat` 必须命中后端，不能落到前端静态页或 SPA fallback，否则浏览器会把 HTML 当成 JSON，出现 `Unexpected token '<'`
+- `/api/chat/stream` 需要单独关闭 buffering，并保持长连接；其余 `/api/` 请求走普通反向代理即可
+- 现在服务端对所有未命中的 `/api/*` 路径统一返回 JSON 404，不再回退 `index.html`
 
 ## 项目结构
 

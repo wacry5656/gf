@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted } from 'vue'
 import type { Character, ChatMessage } from '../api'
-import { sendMessageStream, saveMessage, clearMessages, getEmotion, getRelationship } from '../api'
+import { sendMessageStream, saveMessage, clearMessages, getEmotion, getRelationship, StreamChatError } from '../api'
 
 const props = defineProps<{
   character: Character
@@ -121,15 +121,14 @@ async function send() {
     // 刷新情绪和关系标签
     fetchStatus()
   } catch (e: any) {
-    // If connected but no delta yet, the error is likely a timeout on model side, not network
-    if (connected && !streaming.value) {
-      error.value = e.message || '回复生成超时，请重试'
+    if (e instanceof StreamChatError) {
+      error.value = e.message
+    } else if (connected && !streaming.value) {
+      error.value = e.message || '连接已建立，但回复生成超时，请重试'
     } else {
       error.value = e.message || '发送失败'
     }
-    // If we already received partial content, keep it instead of discarding
-    // Only remove the placeholder if no content was streamed
-    if (!streaming.value) {
+    if (!(e instanceof StreamChatError && e.stage === 'after-partial') && !streaming.value) {
       emit('update:messages', updated)
     }
   } finally {
