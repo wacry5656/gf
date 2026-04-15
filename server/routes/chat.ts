@@ -35,6 +35,39 @@ interface ChatRequestBody {
  * buffering behaviors, and send an initial comment + ready event so the
  * client can confirm the stream is established immediately.
  */
+function writeSSE(res: Response, event: string, data?: unknown): void {
+  res.write(`event: ${event}\n`);
+  if (data !== undefined) {
+    const payload = typeof data === 'string' ? data : JSON.stringify(data);
+    for (const line of payload.split('\n')) {
+      res.write(`data: ${line}\n`);
+    }
+  }
+  res.write('\n');
+}
+
+function writeReady(res: Response): void {
+  res.write(': connected\n\n');
+  writeSSE(res, 'ready', { type: 'ready', ok: true });
+}
+
+function writePing(res: Response): void {
+  writeSSE(res, 'ping', { type: 'ping' });
+}
+
+function writeDelta(res: Response, chunk: string): void {
+  writeSSE(res, 'delta', { delta: chunk });
+}
+
+function writeDone(res: Response, replies: string[]): void {
+  writeSSE(res, 'done', { type: 'done', replies });
+  res.write('data: [DONE]\n\n');
+}
+
+function writeStreamError(res: Response, message: string): void {
+  writeSSE(res, 'error', { type: 'error', error: message });
+}
+
 function setupSSE(res: Response): void {
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -45,8 +78,7 @@ function setupSSE(res: Response): void {
   res.socket?.setNoDelay(true);
   res.socket?.setKeepAlive(true);
   res.flushHeaders();
-  res.write(': connected\n\n');
-  res.write('event: ready\ndata: {"ok":true}\n\n');
+  writeReady(res);
 }
 
 chatRouter.post('/chat', async (req: Request, res: Response) => {
@@ -175,19 +207,26 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         const maxTokens = getMaxTokens(currentUserText);
         const controller = new AbortController();
         let firstChunkSent = false;
+        let responseFinished = false;
+        let disconnectHandled = false;
 
         // Heartbeat to keep connection alive
         const degradedHeartbeat = setInterval(() => {
           if (!controller.signal.aborted) {
-            res.write(': ping\n\n');
+            writePing(res);
           }
         }, 12000);
 
-        req.on('close', () => {
+        const handleClientDisconnect = () => {
+          if (disconnectHandled || responseFinished || controller.signal.aborted) return;
+          disconnectHandled = true;
           console.log(`[Chat/Stream][degraded] 客户端断开, firstChunkSent=${firstChunkSent}`);
           clearInterval(degradedHeartbeat);
           controller.abort();
-        });
+        };
+
+        req.on('aborted', handleClientDisconnect);
+        res.on('close', handleClientDisconnect);
 
         try {
           const fullReply = await callQwenAPIStream(
@@ -198,7 +237,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
                   firstChunkSent = true;
                   console.log(`[Chat/Stream][degraded] 第一个 chunk 已发送`);
                 }
-                res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+                writeDelta(res, chunk);
               }
             },
             controller.signal,
@@ -208,8 +247,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
           const cleaned = cleanReply(fullReply);
           const replies = splitReply(cleaned);
           if (!controller.signal.aborted) {
-            res.write(`data: ${JSON.stringify({ replies })}\n\n`);
-            res.write('data: [DONE]\n\n');
+            writeDone(res, replies);
+            responseFinished = true;
             console.log(`[Chat/Stream][degraded] done 已发送`);
             res.end();
           }
@@ -217,8 +256,9 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
           clearInterval(degradedHeartbeat);
           console.error(`[Chat/Stream][degraded] 流式异常:`, streamErr?.stack || streamErr);
           if (!controller.signal.aborted) {
-            res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
-            res.write('data: [DONE]\n\n');
+            writeStreamError(res, streamErr?.message || '请求失败');
+            writeDone(res, []);
+            responseFinished = true;
             res.end();
           }
         }
@@ -232,21 +272,28 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     setupSSE(res);
     console.log(`[Chat/Stream] ready 已发送, characterId=${characterId}, userId=${reqUserId}`);
 
+    const controller = new AbortController();
+    let firstChunkSent = false;
+    let responseFinished = false;
+    let disconnectHandled = false;
+
     // Heartbeat to keep connection alive through proxies
     heartbeatTimer = setInterval(() => {
       if (!controller.signal.aborted) {
-        res.write(': ping\n\n');
+        writePing(res);
       }
     }, 12000);
 
     // Abort streaming if client disconnects
-    const controller = new AbortController();
-    let firstChunkSent = false;
-    req.on('close', () => {
+    const handleClientDisconnect = () => {
+      if (disconnectHandled || responseFinished || controller.signal.aborted) return;
+      disconnectHandled = true;
       console.log(`[Chat/Stream] 客户端断开, characterId=${characterId}, firstChunkSent=${firstChunkSent}`);
       clearInterval(heartbeatTimer);
       controller.abort();
-    });
+    };
+    req.on('aborted', handleClientDisconnect);
+    res.on('close', handleClientDisconnect);
 
     // 构建四层上下文（已优化为并行获取）
     const contextStart = Date.now();
@@ -269,7 +316,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
               firstChunkSent = true;
               console.log(`[Chat/Stream] 第一个 chunk 已发送, characterId=${characterId}`);
             }
-            res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+            writeDelta(res, chunk);
           }
         },
         controller.signal,
@@ -293,8 +340,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     const replies = splitReply(cleaned);
 
     if (!controller.signal.aborted) {
-      res.write(`data: ${JSON.stringify({ replies })}\n\n`);
-      res.write('data: [DONE]\n\n');
+      writeDone(res, replies);
+      responseFinished = true;
       console.log(`[Chat/Stream] done 已发送, characterId=${characterId}`);
       res.end();
     }
@@ -363,8 +410,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       res.status(500).json({ error: '服务器内部错误，请稍后重试' });
     } else {
       try {
-        res.write(`data: ${JSON.stringify({ error: '服务器内部错误' })}\n\n`);
-        res.write('data: [DONE]\n\n');
+        writeStreamError(res, '服务器内部错误');
+        writeDone(res, []);
         res.end();
       } catch {
         // Client already disconnected, nothing to do

@@ -16,11 +16,27 @@ export interface User {
   username: string;
 }
 
+export type StreamErrorStage = 'pre-connect' | 'before-first-chunk' | 'after-partial';
+
 interface AuthResponsePayload {
   userId?: number;
   username?: string;
   error?: string;
 }
+
+export class StreamChatError extends Error {
+  readonly stage: StreamErrorStage;
+  readonly cause?: unknown;
+
+  constructor(stage: StreamErrorStage, message: string, cause?: unknown) {
+    super(message);
+    this.name = 'StreamChatError';
+    this.stage = stage;
+    this.cause = cause;
+  }
+}
+
+const API_BASE = '/api';
 
 function parseJsonText(text: string): unknown {
   if (!text || text.trim() === '') return null;
@@ -29,35 +45,107 @@ function parseJsonText(text: string): unknown {
   return JSON.parse(text);
 }
 
+function isHtmlLikeResponse(text: string, contentType: string | null): boolean {
+  const normalized = text.trim().toLowerCase();
+  return Boolean(
+    contentType?.includes('text/html') ||
+    normalized.startsWith('<!doctype html') ||
+    normalized.startsWith('<html') ||
+    normalized.startsWith('<body') ||
+    normalized.startsWith('<head')
+  );
+}
+
 /**
  * Handles proxy / gateway failures that may return HTML or empty bodies
  * instead of the JSON payloads produced by the application server.
  */
-function getResponseErrorMessageFromText(text: string, fallback: string): string {
+function getResponseErrorMessageFromText(
+  text: string,
+  fallback: string,
+  contentType?: string | null,
+  options?: { proxyHint?: string }
+): string {
   try {
     const data = parseJsonText(text) as AuthResponsePayload | null;
     if (data?.error) return data.error;
   } catch {
     // Ignore non-JSON error bodies such as HTML error pages from proxies.
   }
+  if (isHtmlLikeResponse(text, contentType ?? null)) {
+    return options?.proxyHint || fallback;
+  }
+  if (!text.trim()) {
+    return `${fallback}（服务返回空响应）`;
+  }
   return fallback;
+}
+
+async function readJsonApiResponse<T>(
+  res: Response,
+  fallback: string,
+  proxyHint: string
+): Promise<T> {
+  const raw = await res.text();
+  const contentType = res.headers.get('content-type');
+
+  try {
+    return parseJsonText(raw) as T;
+  } catch {
+    throw new Error(getResponseErrorMessageFromText(raw, fallback, contentType, { proxyHint }));
+  }
+}
+
+function createStreamStageError(
+  stage: StreamErrorStage,
+  message: string,
+  cause?: unknown
+): StreamChatError {
+  return new StreamChatError(stage, message, cause);
+}
+
+function getInterruptedStreamError(
+  receivedReady: boolean,
+  receivedFirstDelta: boolean,
+  replies: string[],
+  cause?: unknown
+): StreamChatError {
+  if (receivedFirstDelta || replies.length > 0) {
+    return createStreamStageError(
+      'after-partial',
+      '连接在回复过程中中断，已保留已收到的内容，可继续追问或重试。',
+      cause
+    );
+  }
+
+  if (receivedReady) {
+    return createStreamStageError(
+      'before-first-chunk',
+      '连接已建立，但在首个回复分片返回前中断，请重试。',
+      cause
+    );
+  }
+
+  return createStreamStageError(
+    'pre-connect',
+    '流式连接失败，请检查网络或 /api 代理配置后重试。',
+    cause
+  );
 }
 
 // ====== 认证 ======
 
 export async function register(username: string, password: string): Promise<User> {
-  const res = await fetch('/api/auth/register', {
+  const res = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  const raw = await res.text();
-  let data: AuthResponsePayload | null = null;
-  try {
-    data = parseJsonText(raw) as AuthResponsePayload | null;
-  } catch {
-    throw new Error(getResponseErrorMessageFromText(raw, '注册失败，请稍后重试'));
-  }
+  const data = await readJsonApiResponse<AuthResponsePayload>(
+    res,
+    '注册失败，请稍后重试',
+    '注册失败：请求未命中后端认证接口，请检查 /api 代理或 Nginx 配置。'
+  );
   if (!res.ok) throw new Error(data?.error || '注册失败');
   if (!data?.userId || !data?.username) {
     throw new Error('注册失败，请稍后重试');
@@ -66,18 +154,16 @@ export async function register(username: string, password: string): Promise<User
 }
 
 export async function login(username: string, password: string): Promise<User> {
-  const res = await fetch('/api/auth/login', {
+  const res = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  const raw = await res.text();
-  let data: AuthResponsePayload | null = null;
-  try {
-    data = parseJsonText(raw) as AuthResponsePayload | null;
-  } catch {
-    throw new Error(getResponseErrorMessageFromText(raw, '登录失败，请稍后重试'));
-  }
+  const data = await readJsonApiResponse<AuthResponsePayload>(
+    res,
+    '登录失败，请稍后重试',
+    '登录失败：请求未命中后端认证接口，请检查 /api 代理或 Nginx 配置。'
+  );
   if (!res.ok) throw new Error(data?.error || '登录失败');
   if (!data?.userId || !data?.username) {
     throw new Error('登录失败，请稍后重试');
@@ -210,7 +296,7 @@ export async function sendMessageStream(
   userId: number,
   onReady?: () => void
 ): Promise<string[]> {
-  const url = '/api/chat/stream';
+  const url = `${API_BASE}/chat/stream`;
   console.log(`[sendMessageStream] 开始请求: url=${url}, characterId=${character.id}, userId=${userId}`);
 
   let res: Response;
@@ -222,17 +308,27 @@ export async function sendMessageStream(
     });
   } catch (networkErr: any) {
     console.error(`[sendMessageStream] 网络错误: url=${url}, characterId=${character.id}, userId=${userId}`, networkErr);
-    throw new Error(`网络连接失败，请检查网络后重试 (${networkErr?.message || '未知错误'})`);
+    throw createStreamStageError(
+      'pre-connect',
+      `流式连接失败，请检查网络或 /api 代理配置后重试 (${networkErr?.message || '未知错误'})`,
+      networkErr
+    );
   }
 
   if (!res.ok) {
-    const errorMsg = getResponseErrorMessageFromText(await res.text(), `请求失败 (${res.status})`);
+    const raw = await res.text();
+    const errorMsg = getResponseErrorMessageFromText(
+      raw,
+      `请求失败 (${res.status})`,
+      res.headers.get('content-type'),
+      { proxyHint: '流式聊天失败：请求未命中后端接口，请检查 /api 代理或 Nginx 配置。' }
+    );
     console.error(`[sendMessageStream] 服务端返回错误: status=${res.status}, error=${errorMsg}`);
-    throw new Error(errorMsg);
+    throw createStreamStageError('pre-connect', errorMsg);
   }
 
   if (!res.body) {
-    throw new Error('响应体为空');
+    throw createStreamStageError('pre-connect', '流式连接失败：响应体为空');
   }
 
   const reader = res.body.getReader();
@@ -275,6 +371,10 @@ export async function sendMessageStream(
       if (onReady) onReady();
     }
 
+    if (eventName === 'ping') {
+      return;
+    }
+
     const data = dataLines.join('\n').trim();
     if (!data) return;
 
@@ -288,11 +388,18 @@ export async function sendMessageStream(
       const parsed = JSON.parse(data);
 
       if (parsed.ok === true || parsed.type === 'ready' || parsed.type === 'ping') {
-        if (parsed.ok === true && !receivedReady) {
+        if ((parsed.ok === true || parsed.type === 'ready') && !receivedReady) {
           receivedReady = true;
           console.log(`[sendMessageStream] 收到 ready (via data)`);
           if (onReady) onReady();
         }
+        return;
+      }
+
+      if (parsed.type === 'done') {
+        receivedDone = true;
+        if (Array.isArray(parsed.replies)) replies = parsed.replies;
+        console.log(`[sendMessageStream] 收到 done 事件, characterId=${character.id}`);
         return;
       }
 
@@ -304,7 +411,9 @@ export async function sendMessageStream(
         onDelta(parsed.delta);
       }
       if (parsed.replies) replies = parsed.replies;
-      if (parsed.error) throw new Error(parsed.error);
+      if (parsed.error) {
+        throw getInterruptedStreamError(receivedReady, receivedFirstDelta, replies, parsed.error);
+      }
     } catch (e: any) {
       if (e instanceof SyntaxError) return;
       throw e;
@@ -344,11 +453,12 @@ export async function sendMessageStream(
     buffer = '';
   }
 
-  const shouldPropagateStreamError =
-    Boolean(streamReadError) && !receivedDone && !receivedFirstDelta && replies.length === 0;
-
-  if (shouldPropagateStreamError) {
+  if (streamReadError instanceof StreamChatError) {
     throw streamReadError;
+  }
+
+  if (streamReadError || !receivedDone) {
+    throw getInterruptedStreamError(receivedReady, receivedFirstDelta, replies, streamReadError);
   }
 
   console.log(`[sendMessageStream] 流结束: characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);
