@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
-import { getEmotionState, type Mood } from '../services/emotion';
+import { readEmotionState, type Mood } from '../services/emotion';
 
 export const dataRouter = Router();
 
@@ -173,7 +173,34 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
       res.status(400).json({ error: '缺少参数' });
       return;
     }
-    const state = getEmotionState(userId, characterId);
+
+    // 权限校验：检查角色是否存在且属于当前用户
+    const character = db.prepare(
+      'SELECT id, user_id FROM characters WHERE id = ?'
+    ).get(characterId) as { id: number; user_id: number } | undefined;
+
+    if (!character) {
+      res.status(404).json({ error: '角色不存在' });
+      return;
+    }
+    if (character.user_id !== userId) {
+      res.status(403).json({ error: '无权访问该角色的情绪状态' });
+      return;
+    }
+
+    // 只读获取，不隐式创建
+    const state = readEmotionState(userId, characterId);
+    if (!state) {
+      res.json({
+        mood: 'warm',
+        moodLabel: MOOD_LABEL['warm'],
+        affection: 0.5,
+        trust_score: 0.5,
+        jealousy_score: 0,
+      });
+      return;
+    }
+
     res.json({
       mood: state.mood,
       moodLabel: MOOD_LABEL[state.mood || 'warm'] || '温柔',
