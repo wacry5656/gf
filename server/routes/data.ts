@@ -75,6 +75,7 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
       db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM memories WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
+      // 删除角色记录（额外检查 user_id 作为安全防护，防止 TOCTOU 竞态）
       const result = db.prepare('DELETE FROM characters WHERE id = ? AND user_id = ?').run(charId, userId);
       return result;
     });

@@ -5,6 +5,10 @@ interface ChatMessage {
 
 /**
  * 根据用户输入长度动态决定 max_tokens
+ *
+ * 短输入（< 20字，如"在吗""你好"）通常只需简短回复 → 400
+ * 中等输入（20~100字，日常聊天）需要适中回复空间 → 600
+ * 长输入（> 100字，倾诉/复杂话题）需要更充分的回复 → 900
  */
 export function getMaxTokens(userInput: string): number {
   const len = userInput.trim().length;

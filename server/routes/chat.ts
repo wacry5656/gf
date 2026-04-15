@@ -163,28 +163,35 @@ async function buildChatContext(
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
 
   // ---- 并行获取 summary 和 memories ----
-  const summaryStart = Date.now();
-  const memoryStart = Date.now();
+  let summaryElapsed = 0;
+  let memoryElapsed = 0;
 
   const [summaryResult, memoriesResult] = await Promise.all([
-    // 层2：summary（同步函数，包装成 Promise）
+    // 层2：summary（同步函数，包装成 Promise，独立计时）
     ((): Promise<string | null> => {
-      if (!memoryConfig.summaryEnabled) return Promise.resolve(null);
-      return Promise.resolve(getSummary(characterId));
+      const t0 = Date.now();
+      if (!memoryConfig.summaryEnabled) { summaryElapsed = Date.now() - t0; return Promise.resolve(null); }
+      const result = getSummary(characterId);
+      summaryElapsed = Date.now() - t0;
+      return Promise.resolve(result);
     })(),
-    // 层3：long-term memories（异步向量检索）
+    // 层3：long-term memories（异步向量检索，独立计时）
     (async () => {
-      if (!currentUserText) return [];
+      const t0 = Date.now();
+      if (!currentUserText) { memoryElapsed = Date.now() - t0; return []; }
       try {
-        return await searchMemory(characterId, currentUserText);
+        const result = await searchMemory(characterId, currentUserText);
+        memoryElapsed = Date.now() - t0;
+        return result;
       } catch {
+        memoryElapsed = Date.now() - t0;
         return [];
       }
     })(),
   ]);
 
-  console.log(`[Perf] 获取 summary 耗时: ${Date.now() - summaryStart}ms`);
-  console.log(`[Perf] 获取 memories 耗时: ${Date.now() - memoryStart}ms`);
+  console.log(`[Perf] 获取 summary 耗时: ${summaryElapsed}ms`);
+  console.log(`[Perf] 获取 memories 耗时: ${memoryElapsed}ms`);
 
   // ---- 层2：summary block ----
   let summaryBlock = '';
