@@ -74,6 +74,16 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (character_id) REFERENCES characters(id)
   );
+
+  CREATE TABLE IF NOT EXISTS personality_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
 `);
 
 // ========== 兼容性迁移 ==========

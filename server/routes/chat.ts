@@ -3,6 +3,7 @@ import { callQwenAPI, callQwenAPIStream, getMaxTokens } from '../services/qwen';
 import { searchMemory, addMemory, shouldStoreAsMemory, recordMemoryHits } from '../services/memory';
 import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
+import { maybeExtractPersonality, getUserIdFromCharacter, getPersonalityTraits } from '../services/personality';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
 
@@ -51,7 +52,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     const cleaned = cleanReply(rawReply);
     const replies = splitReply(cleaned);
 
-    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新（都不阻塞响应）
+    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取（都不阻塞响应）
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
@@ -64,6 +65,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
         }).catch(() => {});
       }
       maybeUpdateSummary(characterId);
+      maybeExtractPersonality(characterId).catch(() => {});
     }
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
@@ -142,7 +144,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
 
-    // Async: write memory + plan detection + summary (same as non-streaming)
+    // Async: write memory + plan detection + summary + personality (same as non-streaming)
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
@@ -155,6 +157,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         }).catch(() => {});
       }
       maybeUpdateSummary(characterId);
+      maybeExtractPersonality(characterId).catch(() => {});
     }
   } catch (err: any) {
     console.error('Chat stream error:', err?.message || err);
@@ -176,13 +179,14 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 /**
  * 构建发送给模型的上下文，按优先级控制 token 预算：
  *   1. system prompt（角色设定 + 对话规则）
- *   2. summary（用户画像摘要）
- *   3. long-term memories（向量检索）
- *   4. recent messages（短期上下文）
+ *   2. personality（用户长期特征）
+ *   3. summary（用户画像摘要）
+ *   4. long-term memories（向量检索）
+ *   5. recent messages（短期上下文）
  *
  * 预算分配：优先保 recent → summary → memories
  *
- * 优化：summary 和 memory 检索并行执行
+ * 优化：summary、memory、personality 检索并行执行
  */
 async function buildChatContext(
   character: ChatRequestBody['character'],
@@ -195,7 +199,7 @@ async function buildChatContext(
   // ---- 层1：system prompt ----
   let systemContent = buildSystemPrompt(character);
 
-  // ---- 层4：recent messages（短期上下文 — 最优先保留）----
+  // ---- 层5：recent messages（短期上下文 — 最优先保留）----
   const recentMessages = allMessages.slice(-recentLimit);
 
   // 如果没有 characterId，退化为纯短期模式
@@ -203,17 +207,18 @@ async function buildChatContext(
     return [{ role: 'system', content: systemContent }, ...recentMessages];
   }
 
-  // 已用字符预算（由 memory + summary 共享）
+  // 已用字符预算（由 memory + summary + personality 共享）
   let usedChars = 0;
 
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
 
-  // ---- 并行获取 summary 和 memories ----
+  // ---- 并行获取 summary、memories 和 personality ----
   let summaryElapsed = 0;
   let memoryElapsed = 0;
+  let personalityElapsed = 0;
 
-  const [summaryResult, memoriesResult] = await Promise.all([
-    // 层2：summary（同步函数，包装成 Promise，独立计时）
+  const [summaryResult, memoriesResult, personalityResult] = await Promise.all([
+    // 层3：summary（同步函数，包装成 Promise，独立计时）
     ((): Promise<string | null> => {
       const t0 = Date.now();
       if (!memoryConfig.summaryEnabled) { summaryElapsed = Date.now() - t0; return Promise.resolve(null); }
@@ -221,7 +226,7 @@ async function buildChatContext(
       summaryElapsed = Date.now() - t0;
       return Promise.resolve(result);
     })(),
-    // 层3：long-term memories（异步向量检索，独立计时）
+    // 层4：long-term memories（异步向量检索，独立计时）
     (async () => {
       const t0 = Date.now();
       if (!currentUserText) { memoryElapsed = Date.now() - t0; return []; }
@@ -234,19 +239,38 @@ async function buildChatContext(
         return [];
       }
     })(),
+    // 层2：personality（同步函数，包装成 Promise，独立计时）
+    ((): Promise<import('../services/personality').PersonalityTrait[]> => {
+      const t0 = Date.now();
+      if (!memoryConfig.personalityEnabled) { personalityElapsed = Date.now() - t0; return Promise.resolve([]); }
+      const userId = getUserIdFromCharacter(characterId);
+      if (!userId) { personalityElapsed = Date.now() - t0; return Promise.resolve([]); }
+      const result = getPersonalityTraits(userId);
+      personalityElapsed = Date.now() - t0;
+      return Promise.resolve(result);
+    })(),
   ]);
 
   console.log(`[Perf] 获取 summary 耗时: ${summaryElapsed}ms`);
   console.log(`[Perf] 获取 memories 耗时: ${memoryElapsed}ms`);
+  console.log(`[Perf] 获取 personality 耗时: ${personalityElapsed}ms`);
 
-  // ---- 层2：summary block ----
+  // ---- 层2：personality block（在 summary/memory 之前）----
+  let personalityBlock = '';
+  if (personalityResult.length > 0) {
+    const lines = personalityResult.map((t) => `- ${t.value}`);
+    personalityBlock = `\n===== 用户长期特征 =====\n${lines.join('\n')}\n`;
+    usedChars += personalityBlock.length;
+  }
+
+  // ---- 层3：summary block ----
   let summaryBlock = '';
   if (summaryResult) {
     summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summaryResult}\n`;
     usedChars += summaryBlock.length;
   }
 
-  // ---- 层3：memory block ----
+  // ---- 层4：memory block ----
   let memoryBlock = '';
   const memories = memoriesResult;
 
@@ -263,7 +287,12 @@ async function buildChatContext(
   if (memories.length > 0) {
     const memoryLines: string[] = [];
     const usedMemoryIds: number[] = [];
+    const seenTexts = new Set<string>(); // 精确文本去重
     for (const m of memories) {
+      // 精确文本去重
+      if (seenTexts.has(m.text)) continue;
+      seenTexts.add(m.text);
+
       const line = `- ${m.text}`;
       if (usedChars + line.length + 2 > maxContextChars) break;
       memoryLines.push(line);
@@ -278,7 +307,7 @@ async function buildChatContext(
   }
 
   const promptStart = Date.now();
-  systemContent += summaryBlock + memoryBlock;
+  systemContent += personalityBlock + summaryBlock + memoryBlock;
   console.log(`[Perf] prompt 构建耗时: ${Date.now() - promptStart}ms`);
 
   return [{ role: 'system', content: systemContent }, ...recentMessages];
