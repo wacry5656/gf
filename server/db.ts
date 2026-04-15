@@ -15,6 +15,9 @@ const db = new Database(DB_PATH);
 // 启用 WAL 模式，提升并发性能
 db.pragma('journal_mode = WAL');
 
+// 启用外键约束
+db.pragma('foreign_keys = ON');
+
 // 初始化表结构
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (

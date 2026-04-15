@@ -22,18 +22,26 @@ export async function getEmbedding(text: string): Promise<number[]> {
   }
 
   const apiKey = process.env.EMBEDDING_API_KEY || process.env.QWEN_API_KEY;
-  const baseUrl =
-    process.env.EMBEDDING_BASE_URL ||
-    'https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings';
+  const baseUrl = process.env.EMBEDDING_BASE_URL;
   const model = process.env.EMBEDDING_MODEL || 'text-embedding-v3';
 
   if (!apiKey || apiKey === 'your_api_key_here') {
+    console.error('[Embedding] API Key 未配置');
     throw new Error(
       'Embedding API Key 未配置。请在 .env 中设置 EMBEDDING_API_KEY 或 QWEN_API_KEY'
     );
   }
 
-  const response = await fetch(baseUrl, {
+  if (!baseUrl) {
+    console.error('[Embedding] EMBEDDING_BASE_URL 未配置');
+    throw new Error(
+      'EMBEDDING_BASE_URL 未配置。请在 .env 中设置 EMBEDDING_BASE_URL（如 https://dashscope.aliyuncs.com/compatible-mode/v1）'
+    );
+  }
+
+  const url = `${baseUrl.replace(/\/+$/, '')}/embeddings`;
+
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

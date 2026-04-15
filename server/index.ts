@@ -9,6 +9,36 @@ import './db'; // 确保数据库初始化
 
 dotenv.config();
 
+// ========== 启动时配置自检 ==========
+function validateConfig() {
+  const warnings: string[] = [];
+
+  if (!process.env.QWEN_API_KEY || process.env.QWEN_API_KEY === 'your_api_key_here') {
+    warnings.push('[Config] ⚠️  QWEN_API_KEY 未配置或为默认值，聊天功能将不可用');
+  }
+  if (!process.env.QWEN_BASE_URL) {
+    warnings.push('[Config] ⚠️  QWEN_BASE_URL 未配置，聊天功能将不可用');
+  }
+  if (process.env.QWEN_API_URL) {
+    warnings.push('[Config] ⚠️  检测到旧变量 QWEN_API_URL，请改为 QWEN_BASE_URL（不含 /chat/completions 后缀）');
+  }
+  if (!process.env.EMBEDDING_BASE_URL) {
+    warnings.push('[Config] ⚠️  EMBEDDING_BASE_URL 未配置，记忆系统将不可用');
+  }
+
+  if (warnings.length > 0) {
+    console.log('========== 配置检查 ==========');
+    for (const w of warnings) {
+      console.warn(w);
+    }
+    console.log('==============================');
+  } else {
+    console.log('[Config] ✅ 所有必要环境变量已配置');
+  }
+}
+
+validateConfig();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 

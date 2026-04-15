@@ -45,7 +45,24 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     if (characterId) {
       const reqUserId = req.body.userId;
       if (!reqUserId) {
-        res.status(400).json({ error: '缺少 userId 参数' });
+        console.warn('[Chat] characterId 存在但缺少 userId，拒绝请求');
+        res.status(401).json({ error: '请重新登录（缺少用户身份）' });
+        return;
+      }
+      // 检查角色是否存在
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(Number(characterId));
+      if (!charExists) {
+        console.warn(`[Chat] characterId=${characterId} 不存在，降级为临时聊天`);
+        // 角色不存在时降级为临时聊天（不使用记忆系统）
+        const systemContent = buildSystemPrompt({ character });
+        const recentMessages = messages.slice(-memoryConfig.recentMessageLimit);
+        const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
+        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+        const maxTokens = getMaxTokens(currentUserText);
+        const rawReply = await callQwenAPI(fullMessages, maxTokens);
+        const cleaned = cleanReply(rawReply);
+        const replies = splitReply(cleaned);
+        res.json({ reply: replies.join('\n'), replies });
         return;
       }
       const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
@@ -116,7 +133,51 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     if (characterId) {
       const reqUserId = req.body.userId;
       if (!reqUserId) {
-        res.status(400).json({ error: '缺少 userId 参数' });
+        console.warn('[Chat/Stream] characterId 存在但缺少 userId，拒绝请求');
+        res.status(401).json({ error: '请重新登录（缺少用户身份）' });
+        return;
+      }
+      // 检查角色是否存在
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(Number(characterId));
+      if (!charExists) {
+        console.warn(`[Chat/Stream] characterId=${characterId} 不存在，降级为临时聊天`);
+        // 角色不存在时降级为临时聊天
+        const systemContent = buildSystemPrompt({ character });
+        const recentMessages = messages.slice(-memoryConfig.recentMessageLimit);
+        const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+
+        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+        const maxTokens = getMaxTokens(currentUserText);
+        const controller = new AbortController();
+        req.on('close', () => controller.abort());
+
+        try {
+          const fullReply = await callQwenAPIStream(
+            fullMessages,
+            (chunk) => { if (!controller.signal.aborted) res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`); },
+            controller.signal,
+            maxTokens
+          );
+          const cleaned = cleanReply(fullReply);
+          const replies = splitReply(cleaned);
+          if (!controller.signal.aborted) {
+            res.write(`data: ${JSON.stringify({ replies })}\n\n`);
+            res.write('data: [DONE]\n\n');
+            res.end();
+          }
+        } catch (streamErr: any) {
+          if (!controller.signal.aborted) {
+            res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
+            res.write('data: [DONE]\n\n');
+            res.end();
+          }
+        }
         return;
       }
       const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
@@ -186,13 +247,23 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         setImmediate(() => {
           if (controller.signal.aborted) return;
           try {
+            // 先确认角色仍然存在，避免外键约束错误
+            const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(characterId);
+            if (!charExists) {
+              console.warn(`[Stream] 角色 ${characterId} 已被删除，跳过兜底保存`);
+              return;
+            }
             for (const reply of validReplies) {
               db.prepare(
                 'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
               ).run(characterId, 'assistant', reply);
             }
-          } catch (e) {
-            console.error('[Stream] 服务端兜底保存 assistant 回复失败:', e);
+          } catch (e: any) {
+            if (e?.message?.includes('FOREIGN KEY constraint failed')) {
+              console.warn(`[Stream] 外键约束失败（角色可能已删除），characterId=${characterId}`);
+            } else {
+              console.error('[Stream] 服务端兜底保存 assistant 回复失败:', e);
+            }
           }
         });
       }
