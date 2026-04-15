@@ -6,7 +6,7 @@ import { sendMessageStream, saveMessage, clearMessages, getEmotion, getRelations
 const props = defineProps<{
   character: Character
   messages: ChatMessage[]
-  userId?: number
+  userId: number
 }>()
 
 const emit = defineEmits<{

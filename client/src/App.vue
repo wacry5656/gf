@@ -67,9 +67,9 @@ async function onCharacterConfirm(char: Character) {
 async function selectCharacter(char: Character) {
   activeCharacter.value = char
   chatMessages.value = []
-  if (char.id) {
+  if (char.id && user.value) {
     try {
-      chatMessages.value = await getMessages(char.id, user.value?.userId)
+      chatMessages.value = await getMessages(char.id, user.value.userId)
     } catch { /* ignore */ }
   }
 }
