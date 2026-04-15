@@ -69,7 +69,7 @@ async function selectCharacter(char: Character) {
   chatMessages.value = []
   if (char.id) {
     try {
-      chatMessages.value = await getMessages(char.id)
+      chatMessages.value = await getMessages(char.id, user.value?.userId)
     } catch { /* ignore */ }
   }
 }

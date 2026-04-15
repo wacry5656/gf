@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import db from '../db';
 import { readEmotionState, type Mood } from '../services/emotion';
 import { readRelationshipState, type RelationshipPhase } from '../services/relationship';
+import { ensureCharacterOwnership } from '../utils/ownership';
 
 export const dataRouter = Router();
 
@@ -111,6 +112,11 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
 dataRouter.get('/messages/:characterId', (req: Request, res: Response) => {
   try {
     const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
     const messages = db.prepare(
       'SELECT role, content FROM chat_messages WHERE character_id = ? ORDER BY id ASC'
     ).all(characterId);
@@ -125,10 +131,16 @@ dataRouter.get('/messages/:characterId', (req: Request, res: Response) => {
 // 追加一条消息
 dataRouter.post('/messages', (req: Request, res: Response) => {
   try {
-    const { characterId, role, content } = req.body;
+    const { characterId, role, content, userId } = req.body;
     if (!characterId || !role || !content) {
       res.status(400).json({ error: '参数不完整' });
       return;
+    }
+
+    // userId 可能来自 body，如果没有则跳过归属校验（向后兼容）
+    if (userId) {
+      const { ok } = ensureCharacterOwnership(Number(characterId), Number(userId), res);
+      if (!ok) return;
     }
 
     db.prepare(
@@ -146,6 +158,11 @@ dataRouter.post('/messages', (req: Request, res: Response) => {
 dataRouter.delete('/messages/:characterId', (req: Request, res: Response) => {
   try {
     const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
     db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(characterId);
     res.json({ success: true });
   } catch (err: any) {

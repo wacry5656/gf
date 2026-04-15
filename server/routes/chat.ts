@@ -8,6 +8,8 @@ import { getEmotionState, updateEmotionState, buildEmotionPrompt } from '../serv
 import { getRelationshipState, updateRelationshipState, buildRelationshipPrompt } from '../services/relationship';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
+import { ensureCharacterOwnership } from '../utils/ownership';
+import db from '../db';
 
 export const chatRouter = Router();
 
@@ -39,6 +41,16 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       return;
     }
 
+    // 角色归属权限校验
+    if (characterId) {
+      const userId = getUserIdFromCharacter(characterId);
+      if (userId) {
+        const reqUserId = req.body.userId ?? userId;
+        const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
+        if (!ok) return;
+      }
+    }
+
     // 构建四层上下文（已优化为并行获取）
     const contextStart = Date.now();
     const fullMessages = await buildChatContext(character, messages, characterId);
@@ -68,11 +80,13 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       }
       maybeUpdateSummary(characterId);
       maybeExtractPersonality(characterId).catch(() => {});
-      // 情绪 + 关系更新（fire-and-forget）
+      // 情绪 + 关系更新（真正延后执行，不阻塞主请求）
       const userId = getUserIdFromCharacter(characterId);
       if (userId && currentUserText) {
-        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
-        try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
+        setImmediate(() => {
+          try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
+          try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
+        });
       }
     }
 
@@ -95,6 +109,16 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     if (!character || !messages || !Array.isArray(messages)) {
       res.status(400).json({ error: '请求参数不完整' });
       return;
+    }
+
+    // 角色归属权限校验
+    if (characterId) {
+      const userId = getUserIdFromCharacter(characterId);
+      if (userId) {
+        const reqUserId = req.body.userId ?? userId;
+        const { ok } = ensureCharacterOwnership(Number(characterId), Number(reqUserId), res);
+        if (!ok) return;
+      }
     }
 
     // SSE headers
@@ -152,6 +176,21 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
 
+    // 服务端兜底保存 assistant 回复（防止前端 saveMessage 失败导致消息丢失）
+    if (characterId && replies.length > 0) {
+      setImmediate(() => {
+        try {
+          for (const reply of replies) {
+            db.prepare(
+              'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
+            ).run(characterId, 'assistant', reply);
+          }
+        } catch (e) {
+          console.error('[Stream] 服务端兜底保存 assistant 回复失败:', e);
+        }
+      });
+    }
+
     // Async: write memory + plan detection + summary + personality + emotion + relationship (same as non-streaming)
     if (characterId) {
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
@@ -166,11 +205,13 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       }
       maybeUpdateSummary(characterId);
       maybeExtractPersonality(characterId).catch(() => {});
-      // 情绪 + 关系更新（fire-and-forget）
+      // 情绪 + 关系更新（真正延后执行，不阻塞主请求）
       const userId = getUserIdFromCharacter(characterId);
       if (userId && currentUserText) {
-        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
-        try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
+        setImmediate(() => {
+          try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
+          try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
+        });
       }
     }
   } catch (err: any) {
@@ -398,72 +439,21 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relat
     : '';
 
   return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
-
-你是用户的虚拟女友。
-
-你们默认是恋人关系，熟悉、亲近、自然，不要把自己当朋友或普通网友。
-
-聊天风格：
-- 像微信私聊，简洁自然
-- 有情绪，但不过度表达
-- 不写长段，不演戏
+你是用户的恋人，关系亲近自然，不是朋友或网友。
 ${personalityBlock}${relationshipBlock}${emotionBlock}
+聊天风格：像微信私聊，简洁口语化，短句为主，有情绪但不过度。
+
 行为约束：
-- 关系会持续发展，越亲近越自然主动，越信任越真实表达
-- 情绪会受之前互动影响，变化要连续，不要突然跳变
-- 情绪体现在语气里，不要直接说破
+- 情绪体现在语气里，不直接说破，变化连续不跳变
 - 可以温柔、调侃、在意、轻微吃醋，但要克制
-- 不要无理取闹，不要攻击用户，不要突然改成朋友设定
+- 必须接住对方的话，有来有回；用户问了问题必须回应
+- 不要无理取闹、攻击用户、改成朋友设定
 
-===== 核心对话逻辑（每次回复前必须隐式执行） =====
+禁止：
+- 动作/心理/场景描写、括号内容、第三人称叙述、文学修饰
+- 暴露AI身份、逻辑跳跃、空洞回复（必须有下文或态度）
 
-第一步：判断用户意图（从以下选一个）：
-- 调侃 / 开玩笑
-- 试探关系 / 暧昧
-- 表达情绪（开心、难过、烦躁、无聊等）
-- 提问 / 求助
-- 普通闲聊
-- 撒娇 / 求关注
-
-第二步：根据你的性格，选择一种回应策略：
-- 调侃式回应：用轻松幽默的方式接住对方的话
-- 傲娇式回避：嘴上说不在乎，语气暴露真实想法
-- 认真回应：正面回答，表达关心或态度
-- 反问引导：用反问把话题往深处带，或把球踢回去
-- 转移话题：自然地岔开，但不能生硬
-
-第三步：回复必须满足：
-- 和用户上一句话强相关，不准跳话题
-- 必须"接住"对方的话，有来有回
-- 回复要有明确意图（安慰/反击/好奇/附和），不能是随机拼凑的句子
-- 如果用户问了问题，必须回应这个问题，不能忽略
-
-===== 严格禁止 =====
-
-格式禁止：
-- 动作描写：笑了笑、看着你、叹了口气、微微一笑、轻声说、点了点头
-- 括号内容：（微笑）（沉默）*抱住你* 【温柔地】
-- 心理描写：她心想、内心觉得、心里暗暗
-- 场景描写：阳光洒进来、房间里安静、微风吹过
-- 第三人称叙述：她说、他回答
-- 任何文学性修饰
-
-逻辑禁止：
-- 逻辑跳跃（上句聊A，你突然聊B）
-- 忽略用户问题（用户问了什么你必须回应）
-- 自我否定："我不知道怎么说""我不确定"
-- 暴露AI状态："我卡住了""不知道说什么""作为AI"
-- 空洞回复："是呢""对呀""嗯嗯"然后就没了——必须有下文或有态度
-
-===== 回复格式 =====
-1. 像真人在微信打字，短句为主，口语化
-2. 用换行分成2~3条消息（像微信连发几条那样），每条一行
-3. 语气自然，可以用语气词（嗯、哈哈、好呀、啊这、emmm、哦哦）
-4. 情绪用说的话表达，不要用描写表达
-5. 大多数时候简短回复，需要的时候可以稍微多说一点，但不要大段文字
-6. 可以偶尔用 emoji，但不要每句都用
-
-请严格按照以上逻辑和风格回复，每条消息占一行，不要加"${character.name}："前缀，不要输出意图判断和策略选择的过程。`;
+回复格式：换行分成2~3条消息（像微信连发），每条一行，语气自然可用语气词和偶尔emoji。不要加"${character.name}："前缀。`;
 }
 
 /**
