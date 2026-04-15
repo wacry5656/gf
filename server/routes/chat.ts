@@ -70,7 +70,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       // 情绪更新（fire-and-forget）
       const userId = getUserIdFromCharacter(characterId);
       if (userId && currentUserText) {
-        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch { /* ignore */ }
+        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
       }
     }
 
@@ -167,7 +167,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       // 情绪更新（fire-and-forget）
       const userId = getUserIdFromCharacter(characterId);
       if (userId && currentUserText) {
-        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch { /* ignore */ }
+        try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
       }
     }
   } catch (err: any) {

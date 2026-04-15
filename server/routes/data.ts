@@ -176,7 +176,7 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
     const state = getEmotionState(userId, characterId);
     res.json({
       mood: state.mood,
-      moodLabel: MOOD_LABEL[(state.mood as Mood) || 'warm'] || '温柔',
+      moodLabel: MOOD_LABEL[state.mood || 'warm'] || '温柔',
       affection: state.affection,
       trust_score: state.trust_score,
       jealousy_score: state.jealousy_score,

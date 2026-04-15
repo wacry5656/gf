@@ -91,7 +91,7 @@ export function updateEmotionState(
   if (containsAny(userInput, INTIMATE_KEYWORDS)) {
     affection += 0.05;
     trust_score += 0.03;
-    mood = pickMood(['warm', 'happy', 'shy'], mood as Mood, stability_score);
+    mood = pickMood(['warm', 'happy', 'shy'], mood, stability_score);
     trigger = '亲密表达';
     moodChanged = true;
   }
@@ -100,7 +100,7 @@ export function updateEmotionState(
   if (containsAny(userInput, COLD_KEYWORDS)) {
     affection -= 0.04;
     trust_score -= 0.05;
-    mood = pickMood(['upset', 'distant'], mood as Mood, stability_score);
+    mood = pickMood(['upset', 'distant'], mood, stability_score);
     trigger = '冷淡或攻击表达';
     moodChanged = true;
   }
@@ -108,7 +108,7 @@ export function updateEmotionState(
   // 规则3：第三者/其他异性话题
   if (containsAny(userInput, JEALOUSY_KEYWORDS)) {
     jealousy_score += 0.08;
-    mood = pickMood(['jealous', 'upset'], mood as Mood, stability_score);
+    mood = pickMood(['jealous', 'upset'], mood, stability_score);
     trigger = '第三者话题';
     moodChanged = true;
   }
@@ -117,7 +117,7 @@ export function updateEmotionState(
   if (containsAny(userInput, CARING_KEYWORDS)) {
     affection += 0.03;
     trust_score += 0.05;
-    mood = pickMood(['caring', 'warm', 'shy'], mood as Mood, stability_score);
+    mood = pickMood(['caring', 'warm', 'shy'], mood, stability_score);
     trigger = '被安慰关心';
     moodChanged = true;
   }
@@ -162,7 +162,7 @@ export function buildEmotionPrompt(state: EmotionState): string {
     distant: '她现在会稍微收着一点，不会像平时那么主动热情，但仍保持交流。',
   };
 
-  const mood = (state.mood as Mood) || 'warm';
+  const mood = state.mood || 'warm';
   let text = moodMap[mood] || moodMap.warm;
 
   // 附加修饰
