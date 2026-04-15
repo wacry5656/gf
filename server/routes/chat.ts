@@ -179,18 +179,22 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
 
     // 服务端兜底保存 assistant 回复（防止前端 saveMessage 失败导致消息丢失）
-    if (characterId && replies.length > 0) {
-      setImmediate(() => {
-        try {
-          for (const reply of replies) {
-            db.prepare(
-              'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
-            ).run(characterId, 'assistant', reply);
+    // 仅在客户端未中止且有非空回复时才保存
+    if (characterId && !controller.signal.aborted && replies.length > 0) {
+      const validReplies = replies.filter(r => r.trim().length > 0);
+      if (validReplies.length > 0) {
+        setImmediate(() => {
+          try {
+            for (const reply of validReplies) {
+              db.prepare(
+                'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
+              ).run(characterId, 'assistant', reply);
+            }
+          } catch (e) {
+            console.error('[Stream] 服务端兜底保存 assistant 回复失败:', e);
           }
-        } catch (e) {
-          console.error('[Stream] 服务端兜底保存 assistant 回复失败:', e);
-        }
-      });
+        });
+      }
     }
 
     // Async: write memory + plan detection + summary + personality + emotion + relationship (same as non-streaming)
@@ -427,35 +431,19 @@ interface SystemPromptParams {
 function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relationshipPrompt }: SystemPromptParams): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
 
-  // 可选段落
-  const personalityBlock = personalitySummary
-    ? `\n【用户长期特征】\n${personalitySummary}\n`
-    : '';
+  const blocks = [
+    `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。`,
+    '你是用户的恋人，关系亲近自然，不是朋友或网友。',
+    personalitySummary ? `【用户长期特征】\n${personalitySummary}` : '',
+    relationshipPrompt ? `【关系状态】\n${relationshipPrompt}` : '',
+    emotionPrompt ? `【当前情绪】\n${emotionPrompt}` : '',
+    '聊天风格：像微信私聊，简洁口语化，短句为主，有情绪但不过度。',
+    '行为约束：\n- 情绪体现在语气里，不直接说破，变化连续不跳变\n- 可以温柔、调侃、在意、轻微吃醋，但要克制\n- 必须接住对方的话，有来有回；用户问了问题必须回应\n- 不要无理取闹、攻击用户、改成朋友设定',
+    '禁止：\n- 动作/心理/场景描写、括号内容、第三人称叙述、文学修饰\n- 暴露AI身份、逻辑跳跃、空洞回复（必须有下文或态度）',
+    `回复格式：换行分成2~3条消息（像微信连发），每条一行，语气自然可用语气词和偶尔emoji。不要加"${character.name}："前缀。`,
+  ].filter(Boolean).join('\n');
 
-  const relationshipBlock = relationshipPrompt
-    ? `\n【关系状态】\n${relationshipPrompt}\n`
-    : '';
-
-  const emotionBlock = emotionPrompt
-    ? `\n【当前情绪】\n${emotionPrompt}\n`
-    : '';
-
-  return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
-你是用户的恋人，关系亲近自然，不是朋友或网友。
-${personalityBlock}${relationshipBlock}${emotionBlock}
-聊天风格：像微信私聊，简洁口语化，短句为主，有情绪但不过度。
-
-行为约束：
-- 情绪体现在语气里，不直接说破，变化连续不跳变
-- 可以温柔、调侃、在意、轻微吃醋，但要克制
-- 必须接住对方的话，有来有回；用户问了问题必须回应
-- 不要无理取闹、攻击用户、改成朋友设定
-
-禁止：
-- 动作/心理/场景描写、括号内容、第三人称叙述、文学修饰
-- 暴露AI身份、逻辑跳跃、空洞回复（必须有下文或态度）
-
-回复格式：换行分成2~3条消息（像微信连发），每条一行，语气自然可用语气词和偶尔emoji。不要加"${character.name}："前缀。`;
+  return blocks.trim();
 }
 
 /**
