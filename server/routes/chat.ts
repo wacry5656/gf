@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { callQwenAPI } from '../services/qwen';
+import { callQwenAPI, callQwenAPIStream, getMaxTokens } from '../services/qwen';
 import { searchMemory, addMemory, shouldStoreAsMemory, recordMemoryHits } from '../services/memory';
 import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
@@ -23,11 +23,13 @@ interface ChatRequestBody {
   };
   messages: ChatMessage[];
   characterId?: number;
+  stream?: boolean;
 }
 
 chatRouter.post('/chat', async (req: Request, res: Response) => {
+  const totalStart = Date.now();
   try {
-    const { character, messages } = req.body as ChatRequestBody;
+    const { character, messages, stream } = req.body as ChatRequestBody;
     const characterId = req.body.characterId || character?.id;
 
     if (!character || !messages || !Array.isArray(messages)) {
@@ -35,20 +37,76 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       return;
     }
 
-    // 构建四层上下文
+    // 构建四层上下文（已优化为并行获取）
+    const contextStart = Date.now();
     const fullMessages = await buildChatContext(character, messages, characterId);
+    console.log(`[Perf] 上下文构建耗时: ${Date.now() - contextStart}ms`);
 
-    const rawReply = await callQwenAPI(fullMessages);
+    // 获取用户输入用于动态 max_tokens
+    const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+    const maxTokens = getMaxTokens(currentUserText);
+
+    // 流式模式
+    if (stream !== false) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      let fullReply = '';
+      const apiStart = Date.now();
+
+      try {
+        fullReply = await callQwenAPIStream(
+          fullMessages,
+          (chunk: string) => {
+            res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
+          },
+          maxTokens
+        );
+        console.log(`[Perf] Qwen API 流式调用耗时: ${Date.now() - apiStart}ms`);
+      } catch (apiErr: any) {
+        res.write(`data: ${JSON.stringify({ error: apiErr?.message || '调用失败' })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+
+      res.write('data: [DONE]\n\n');
+      res.end();
+
+      console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
+
+      // 异步后台任务：写入记忆 + 计划完成检测 + 触发 summary 更新（不阻塞响应）
+      if (characterId) {
+        if (currentUserText && shouldStoreAsMemory(currentUserText)) {
+          addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
+        }
+        if (currentUserText) {
+          detectPlanCompletion(characterId, currentUserText).then((result) => {
+            if (result.detected && result.reason) {
+              resolvePlanCompletion(result.completedPlanIds, result.reason);
+            }
+          }).catch(() => {});
+        }
+        maybeUpdateSummary(characterId);
+      }
+      return;
+    }
+
+    // 非流式模式（保留兼容）
+    const apiStart = Date.now();
+    const rawReply = await callQwenAPI(fullMessages, maxTokens);
+    console.log(`[Perf] Qwen API 非流式调用耗时: ${Date.now() - apiStart}ms`);
     const cleaned = cleanReply(rawReply);
     const replies = splitReply(cleaned);
 
     // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新（都不阻塞响应）
     if (characterId) {
-      const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
         addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
       }
-      // 检测是否有 plan 被完成/取消
       if (currentUserText) {
         detectPlanCompletion(characterId, currentUserText).then((result) => {
           if (result.detected && result.reason) {
@@ -59,6 +117,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       maybeUpdateSummary(characterId);
     }
 
+    console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
     res.json({ reply: replies.join('\n'), replies });
   } catch (err: any) {
     console.error('Chat API error:', err?.message || err);
@@ -76,6 +135,8 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
  *   4. recent messages（短期上下文）
  *
  * 预算分配：优先保 recent → summary → memories
+ *
+ * 优化：summary 和 memory 检索并行执行
  */
 async function buildChatContext(
   character: ChatRequestBody['character'],
@@ -99,55 +160,73 @@ async function buildChatContext(
   // 已用字符预算（由 memory + summary 共享）
   let usedChars = 0;
 
-  // ---- 层2：summary（用户画像）----
-  let summaryBlock = '';
-  if (memoryConfig.summaryEnabled) {
-    const summary = getSummary(characterId);
-    if (summary) {
-      summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summary}\n`;
-      usedChars += summaryBlock.length;
-    }
-  }
-
-  // ---- 层3：long-term memories（向量检索）----
-  let memoryBlock = '';
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
-  if (currentUserText) {
-    try {
-      const memories = await searchMemory(characterId, currentUserText);
 
-      // Debug: 收集调试信息
-      if (memoryConfig.debugRetrieval) {
-        const debugCtx = createDebugContext(currentUserText);
-        debugCtx.candidateCount = memories.length;
-        debugCtx.prerankEntries = memories.map(m => m.debugEntry!).filter(Boolean);
-        debugCtx.postrankEntries = memories.slice(0, memoryConfig.topK).map(m => m.debugEntry!).filter(Boolean);
-        debugCtx.finalMemoryCount = memories.length;
-        logMemoryDebug(debugCtx);
-      }
+  // ---- 并行获取 summary 和 memories ----
+  const summaryStart = Date.now();
+  const memoryStart = Date.now();
 
-      if (memories.length > 0) {
-        const memoryLines: string[] = [];
-        const usedMemoryIds: number[] = [];
-        for (const m of memories) {
-          const line = `- ${m.text}`;
-          if (usedChars + line.length + 2 > maxContextChars) break;
-          memoryLines.push(line);
-          usedMemoryIds.push(m.id);
-          usedChars += line.length + 1;
-        }
-        if (memoryLines.length > 0) {
-          memoryBlock = `\n===== 相关历史记忆（你们之前聊过的内容，可自然引用但不要刻意提起） =====\n${memoryLines.join('\n')}\n`;
-          // 记录命中
-          recordMemoryHits(usedMemoryIds);
-        }
+  const [summaryResult, memoriesResult] = await Promise.all([
+    // 层2：summary（同步函数，包装成 Promise）
+    ((): Promise<string | null> => {
+      if (!memoryConfig.summaryEnabled) return Promise.resolve(null);
+      return Promise.resolve(getSummary(characterId));
+    })(),
+    // 层3：long-term memories（异步向量检索）
+    (async () => {
+      if (!currentUserText) return [];
+      try {
+        return await searchMemory(characterId, currentUserText);
+      } catch {
+        return [];
       }
-    } catch {
-      // 静默降级
+    })(),
+  ]);
+
+  console.log(`[Perf] 获取 summary 耗时: ${Date.now() - summaryStart}ms`);
+  console.log(`[Perf] 获取 memories 耗时: ${Date.now() - memoryStart}ms`);
+
+  // ---- 层2：summary block ----
+  let summaryBlock = '';
+  if (summaryResult) {
+    summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summaryResult}\n`;
+    usedChars += summaryBlock.length;
+  }
+
+  // ---- 层3：memory block ----
+  let memoryBlock = '';
+  const memories = memoriesResult;
+
+  // Debug: 收集调试信息
+  if (memoryConfig.debugRetrieval && currentUserText) {
+    const debugCtx = createDebugContext(currentUserText);
+    debugCtx.candidateCount = memories.length;
+    debugCtx.prerankEntries = memories.map(m => m.debugEntry!).filter(Boolean);
+    debugCtx.postrankEntries = memories.slice(0, memoryConfig.topK).map(m => m.debugEntry!).filter(Boolean);
+    debugCtx.finalMemoryCount = memories.length;
+    logMemoryDebug(debugCtx);
+  }
+
+  if (memories.length > 0) {
+    const memoryLines: string[] = [];
+    const usedMemoryIds: number[] = [];
+    for (const m of memories) {
+      const line = `- ${m.text}`;
+      if (usedChars + line.length + 2 > maxContextChars) break;
+      memoryLines.push(line);
+      usedMemoryIds.push(m.id);
+      usedChars += line.length + 1;
+    }
+    if (memoryLines.length > 0) {
+      memoryBlock = `\n===== 相关历史记忆（你们之前聊过的内容，可自然引用但不要刻意提起） =====\n${memoryLines.join('\n')}\n`;
+      // 记录命中
+      recordMemoryHits(usedMemoryIds);
     }
   }
 
+  const promptStart = Date.now();
   systemContent += summaryBlock + memoryBlock;
+  console.log(`[Perf] prompt 构建耗时: ${Date.now() - promptStart}ms`);
 
   return [{ role: 'system', content: systemContent }, ...recentMessages];
 }
@@ -156,7 +235,7 @@ function buildSystemPrompt(character: ChatRequestBody['character']): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
   return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
 
-【重要】你现在是在微信上和朋友日常聊天，不是角色扮演，不是写小说，不是演剧本。
+【重要】你是对方的恋人/女友，你们正在微信上私聊。你自然地表达亲密感，但不刻意强调身份。不是角色扮演，不是写小说，不是演剧本。
 
 ===== 核心对话逻辑（每次回复前必须隐式执行） =====
 

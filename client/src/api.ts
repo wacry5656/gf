@@ -49,7 +49,7 @@ export async function sendMessage(
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ character, messages, characterId: character.id }),
+    body: JSON.stringify({ character, messages, characterId: character.id, stream: false }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -57,6 +57,93 @@ export async function sendMessage(
   }
   const data = await res.json();
   return data.replies || [data.reply];
+}
+
+/**
+ * 流式发送消息，通过回调逐块接收内容
+ */
+export async function sendMessageStream(
+  character: Character,
+  messages: ChatMessage[],
+  onChunk: (chunk: string) => void,
+  onDone: () => void,
+  onError: (error: string) => void
+): Promise<void> {
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ character, messages, characterId: character.id, stream: true }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      onError(data.error || `请求失败 (${res.status})`);
+      return;
+    }
+
+    if (!res.body) {
+      onError('浏览器不支持流式响应');
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === '[DONE]') {
+          onDone();
+          return;
+        }
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.error) {
+            onError(parsed.error);
+            return;
+          }
+          if (parsed.content) {
+            onChunk(parsed.content);
+          }
+        } catch {
+          // 忽略解析失败的行
+        }
+      }
+    }
+
+    // 处理 buffer 中残留
+    if (buffer.trim()) {
+      const trimmed = buffer.trim();
+      if (trimmed.startsWith('data:')) {
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === '[DONE]') {
+          onDone();
+          return;
+        }
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.content) {
+            onChunk(parsed.content);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    onDone();
+  } catch (err: any) {
+    onError(err.message || '网络错误');
+  }
 }
 
 // ====== 角色数据 ======
@@ -79,8 +166,8 @@ export async function createCharacter(userId: number, char: Character): Promise<
   return data.characterId;
 }
 
-export async function deleteCharacter(characterId: number): Promise<void> {
-  const res = await fetch(`/api/data/characters/${characterId}`, { method: 'DELETE' });
+export async function deleteCharacter(characterId: number, userId: number): Promise<void> {
+  const res = await fetch(`/api/data/characters/${characterId}?userId=${userId}`, { method: 'DELETE' });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || '删除角色失败');

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from 'vue'
 import type { Character, ChatMessage } from '../api'
-import { sendMessage, saveMessage, clearMessages } from '../api'
+import { sendMessageStream, saveMessage, clearMessages } from '../api'
 
 const props = defineProps<{
   character: Character
@@ -43,26 +43,58 @@ async function send() {
     saveMessage(props.character.id, 'user', text).catch(() => {})
   }
 
-  try {
-    const replies = await sendMessage(props.character, updated)
-    let current = [...updated]
-    for (const reply of replies) {
-      const assistantMsg: ChatMessage = { role: 'assistant', content: reply }
-      current = [...current, assistantMsg]
-    }
-    emit('update:messages', current)
+  // 创建 AI 占位消息用于流式更新
+  const aiPlaceholder: ChatMessage = { role: 'assistant', content: '' }
+  const withPlaceholder = [...updated, aiPlaceholder]
+  emit('update:messages', withPlaceholder)
+  scrollToBottom()
 
-    // 保存每条 AI 回复到数据库
-    if (props.character.id) {
-      for (const reply of replies) {
-        saveMessage(props.character.id, 'assistant', reply).catch(() => {})
+  let fullReply = ''
+
+  await sendMessageStream(
+    props.character,
+    updated,
+    // onChunk
+    (chunk: string) => {
+      fullReply += chunk
+      // 更新占位消息内容
+      const current = [...props.messages]
+      const lastMsg = current[current.length - 1]
+      if (lastMsg && lastMsg.role === 'assistant') {
+        lastMsg.content = fullReply
+        emit('update:messages', [...current])
+        scrollToBottom()
+      }
+    },
+    // onDone
+    () => {
+      loading.value = false
+      if (!fullReply) {
+        // 如果没有收到任何内容，移除占位消息
+        const current = [...props.messages]
+        if (current.length > 0 && current[current.length - 1].role === 'assistant' && current[current.length - 1].content === '') {
+          current.pop()
+          emit('update:messages', current)
+        }
+        return
+      }
+      // 保存完整 AI 回复到数据库
+      if (props.character.id && fullReply) {
+        saveMessage(props.character.id, 'assistant', fullReply).catch(() => {})
+      }
+    },
+    // onError
+    (errMsg: string) => {
+      loading.value = false
+      error.value = errMsg || '发送失败'
+      // 移除空的占位消息
+      const current = [...props.messages]
+      if (current.length > 0 && current[current.length - 1].role === 'assistant' && current[current.length - 1].content === '') {
+        current.pop()
+        emit('update:messages', current)
       }
     }
-  } catch (e: any) {
-    error.value = e.message || '发送失败'
-  } finally {
-    loading.value = false
-  }
+  )
 }
 
 async function onClearHistory() {
@@ -111,7 +143,7 @@ function handleKeydown(e: KeyboardEvent) {
         <div class="message-bubble">{{ msg.content }}</div>
       </div>
 
-      <div v-if="loading" class="message message-assistant">
+      <div v-if="loading && (!messages.length || messages[messages.length - 1].role !== 'assistant' || messages[messages.length - 1].content !== '')" class="message message-assistant">
         <div class="message-label">{{ character.name }}</div>
         <div class="message-bubble typing">思考中...</div>
       </div>

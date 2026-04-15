@@ -39,13 +39,54 @@ dataRouter.post('/characters', (req: Request, res: Response) => {
   }
 });
 
-// 删除角色（连带删除聊天记录）
+// 删除角色（连带删除聊天记录、记忆、摘要）
 dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
   try {
     const charId = Number(req.params.id);
-    db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
-    db.prepare('DELETE FROM characters WHERE id = ?').run(charId);
-    res.json({ success: true });
+    const userId = req.query.userId ? Number(req.query.userId) : null;
+
+    if (!charId || isNaN(charId)) {
+      res.status(400).json({ error: '无效的角色 ID' });
+      return;
+    }
+
+    if (!userId) {
+      res.status(400).json({ error: '缺少 userId 参数' });
+      return;
+    }
+
+    // 验证角色存在且属于当前用户
+    const character = db.prepare(
+      'SELECT id, user_id FROM characters WHERE id = ?'
+    ).get(charId) as { id: number; user_id: number } | undefined;
+
+    if (!character) {
+      res.status(404).json({ error: '角色不存在' });
+      return;
+    }
+
+    if (character.user_id !== userId) {
+      res.status(403).json({ error: '无权删除该角色' });
+      return;
+    }
+
+    // 使用事务确保级联删除的原子性
+    const deleteAll = db.transaction(() => {
+      db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM memories WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
+      const result = db.prepare('DELETE FROM characters WHERE id = ? AND user_id = ?').run(charId, userId);
+      return result;
+    });
+
+    const result = deleteAll();
+
+    if (result.changes === 0) {
+      res.status(500).json({ error: '删除角色失败，请重试' });
+      return;
+    }
+
+    res.json({ success: true, deletedId: charId });
   } catch (err: any) {
     console.error('Delete character error:', err?.message);
     res.status(500).json({ error: '删除角色失败' });
