@@ -208,6 +208,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         const controller = new AbortController();
         let firstChunkSent = false;
         let responseFinished = false;
+        let disconnectHandled = false;
 
         // Heartbeat to keep connection alive
         const degradedHeartbeat = setInterval(() => {
@@ -217,7 +218,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         }, 12000);
 
         const handleClientDisconnect = () => {
-          if (responseFinished || controller.signal.aborted) return;
+          if (disconnectHandled || responseFinished || controller.signal.aborted) return;
+          disconnectHandled = true;
           console.log(`[Chat/Stream][degraded] 客户端断开, firstChunkSent=${firstChunkSent}`);
           clearInterval(degradedHeartbeat);
           controller.abort();
@@ -273,6 +275,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     const controller = new AbortController();
     let firstChunkSent = false;
     let responseFinished = false;
+    let disconnectHandled = false;
 
     // Heartbeat to keep connection alive through proxies
     heartbeatTimer = setInterval(() => {
@@ -283,7 +286,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     // Abort streaming if client disconnects
     const handleClientDisconnect = () => {
-      if (responseFinished || controller.signal.aborted) return;
+      if (disconnectHandled || responseFinished || controller.signal.aborted) return;
+      disconnectHandled = true;
       console.log(`[Chat/Stream] 客户端断开, characterId=${characterId}, firstChunkSent=${firstChunkSent}`);
       clearInterval(heartbeatTimer);
       controller.abort();

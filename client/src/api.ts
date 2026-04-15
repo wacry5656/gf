@@ -52,7 +52,7 @@ function isHtmlLikeResponse(text: string, contentType: string | null): boolean {
     normalized.startsWith('<!doctype html') ||
     normalized.startsWith('<html') ||
     normalized.startsWith('<body') ||
-    normalized.startsWith('<')
+    normalized.startsWith('<head')
   );
 }
 
@@ -461,11 +461,7 @@ export async function sendMessageStream(
     throw streamReadError;
   }
 
-  if (streamReadError && !receivedDone) {
-    throw getInterruptedStreamError(receivedReady, receivedFirstDelta, replies, streamReadError);
-  }
-
-  if (!receivedDone) {
+  if (streamReadError || !receivedDone) {
     throw getInterruptedStreamError(receivedReady, receivedFirstDelta, replies, streamReadError);
   }
 
