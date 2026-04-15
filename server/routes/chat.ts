@@ -30,6 +30,11 @@ interface ChatRequestBody {
   characterId?: number;
 }
 
+/**
+ * Prepare an SSE response for browsers and reverse proxies, disable common
+ * buffering behaviors, and send an initial comment + ready event so the
+ * client can confirm the stream is established immediately.
+ */
 function setupSSE(res: Response) {
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');

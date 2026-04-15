@@ -16,14 +16,24 @@ export interface User {
   username: string;
 }
 
-function parseJsonText(text: string): any {
+interface AuthResponsePayload {
+  userId?: number;
+  username?: string;
+  error?: string;
+}
+
+function parseJsonText(text: string): unknown {
   if (!text) return null;
   return JSON.parse(text);
 }
 
+/**
+ * Handles proxy / gateway failures that may return HTML or empty bodies
+ * instead of the JSON payloads produced by the application server.
+ */
 function getResponseErrorMessageFromText(text: string, fallback: string): string {
   try {
-    const data = parseJsonText(text);
+    const data = parseJsonText(text) as AuthResponsePayload | null;
     if (data?.error) return data.error;
   } catch {
     // Ignore non-JSON error bodies such as HTML error pages from proxies.
@@ -40,9 +50,9 @@ export async function register(username: string, password: string): Promise<User
     body: JSON.stringify({ username, password }),
   });
   const raw = await res.text();
-  let data: any = null;
+  let data: AuthResponsePayload | null = null;
   try {
-    data = parseJsonText(raw);
+    data = parseJsonText(raw) as AuthResponsePayload | null;
   } catch {
     throw new Error(getResponseErrorMessageFromText(raw, '注册失败，请稍后重试'));
   }
@@ -50,7 +60,7 @@ export async function register(username: string, password: string): Promise<User
   if (!data?.userId || !data?.username) {
     throw new Error('注册失败，请稍后重试');
   }
-  return data;
+  return { userId: data.userId, username: data.username };
 }
 
 export async function login(username: string, password: string): Promise<User> {
@@ -60,9 +70,9 @@ export async function login(username: string, password: string): Promise<User> {
     body: JSON.stringify({ username, password }),
   });
   const raw = await res.text();
-  let data: any = null;
+  let data: AuthResponsePayload | null = null;
   try {
-    data = parseJsonText(raw);
+    data = parseJsonText(raw) as AuthResponsePayload | null;
   } catch {
     throw new Error(getResponseErrorMessageFromText(raw, '登录失败，请稍后重试'));
   }
@@ -70,7 +80,7 @@ export async function login(username: string, password: string): Promise<User> {
   if (!data?.userId || !data?.username) {
     throw new Error('登录失败，请稍后重试');
   }
-  return data;
+  return { userId: data.userId, username: data.username };
 }
 
 // ====== 聊天 ======
@@ -232,6 +242,8 @@ export async function sendMessageStream(
   let receivedDone = false;
   let streamReadError: unknown = null;
 
+  // Parse one SSE event block (blank-line delimited) so ready/delta/done
+  // messages still work even when proxies coalesce or split TCP chunks.
   const processEvent = (eventBlock: string) => {
     const normalized = eventBlock.replace(/\r/g, '');
     if (!normalized.trim()) return;
