@@ -23,13 +23,12 @@ interface ChatRequestBody {
   };
   messages: ChatMessage[];
   characterId?: number;
-  stream?: boolean;
 }
 
 chatRouter.post('/chat', async (req: Request, res: Response) => {
   const totalStart = Date.now();
   try {
-    const { character, messages, stream } = req.body as ChatRequestBody;
+    const { character, messages } = req.body as ChatRequestBody;
     const characterId = req.body.characterId || character?.id;
 
     if (!character || !messages || !Array.isArray(messages)) {
@@ -46,56 +45,6 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
     const maxTokens = getMaxTokens(currentUserText);
 
-    // 流式模式
-    if (stream !== false) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders();
-
-      let fullReply = '';
-      const apiStart = Date.now();
-
-      try {
-        fullReply = await callQwenAPIStream(
-          fullMessages,
-          (chunk: string) => {
-            res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
-          },
-          maxTokens
-        );
-        console.log(`[Perf] Qwen API 流式调用耗时: ${Date.now() - apiStart}ms`);
-      } catch (apiErr: any) {
-        res.write(`data: ${JSON.stringify({ error: apiErr?.message || '调用失败' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
-        return;
-      }
-
-      res.write('data: [DONE]\n\n');
-      res.end();
-
-      console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
-
-      // 异步后台任务：写入记忆 + 计划完成检测 + 触发 summary 更新（不阻塞响应）
-      if (characterId) {
-        if (currentUserText && shouldStoreAsMemory(currentUserText)) {
-          addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
-        }
-        if (currentUserText) {
-          detectPlanCompletion(characterId, currentUserText).then((result) => {
-            if (result.detected && result.reason) {
-              resolvePlanCompletion(result.completedPlanIds, result.reason);
-            }
-          }).catch(() => {});
-        }
-        maybeUpdateSummary(characterId);
-      }
-      return;
-    }
-
-    // 非流式模式（保留兼容）
     const apiStart = Date.now();
     const rawReply = await callQwenAPI(fullMessages, maxTokens);
     console.log(`[Perf] Qwen API 非流式调用耗时: ${Date.now() - apiStart}ms`);
@@ -122,6 +71,103 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Chat API error:', err?.message || err);
     res.status(500).json({ error: '服务器内部错误，请稍后重试' });
+  }
+});
+
+// ========== 流式聊天接口 ==========
+
+chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
+  const totalStart = Date.now();
+  try {
+    const { character, messages } = req.body as ChatRequestBody;
+    const characterId = req.body.characterId || character?.id;
+
+    if (!character || !messages || !Array.isArray(messages)) {
+      res.status(400).json({ error: '请求参数不完整' });
+      return;
+    }
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    // Abort streaming if client disconnects
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    // 构建四层上下文（已优化为并行获取）
+    const contextStart = Date.now();
+    const fullMessages = await buildChatContext(character, messages, characterId);
+    console.log(`[Perf] 上下文构建耗时: ${Date.now() - contextStart}ms`);
+
+    // 获取用户输入用于动态 max_tokens
+    const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+    const maxTokens = getMaxTokens(currentUserText);
+
+    let fullReply = '';
+    const apiStart = Date.now();
+    try {
+      fullReply = await callQwenAPIStream(
+        fullMessages,
+        (chunk) => {
+          if (!controller.signal.aborted) {
+            res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+          }
+        },
+        controller.signal,
+        maxTokens
+      );
+      console.log(`[Perf] Qwen API 流式调用耗时: ${Date.now() - apiStart}ms`);
+    } catch (streamErr: any) {
+      if (!controller.signal.aborted) {
+        res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+      return;
+    }
+
+    // Clean and split the full reply
+    const cleaned = cleanReply(fullReply);
+    const replies = splitReply(cleaned);
+
+    if (!controller.signal.aborted) {
+      res.write(`data: ${JSON.stringify({ replies })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
+
+    console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
+
+    // Async: write memory + plan detection + summary (same as non-streaming)
+    if (characterId) {
+      if (currentUserText && shouldStoreAsMemory(currentUserText)) {
+        addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
+      }
+      if (currentUserText) {
+        detectPlanCompletion(characterId, currentUserText).then((result) => {
+          if (result.detected && result.reason) {
+            resolvePlanCompletion(result.completedPlanIds, result.reason);
+          }
+        }).catch(() => {});
+      }
+      maybeUpdateSummary(characterId);
+    }
+  } catch (err: any) {
+    console.error('Chat stream error:', err?.message || err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: '服务器内部错误，请稍后重试' });
+    } else {
+      try {
+        res.write(`data: ${JSON.stringify({ error: '服务器内部错误' })}\n\n`);
+        res.end();
+      } catch {
+        // Client already disconnected, nothing to do
+      }
+    }
   }
 });
 

@@ -14,6 +14,7 @@ const emit = defineEmits<{
 
 const inputText = ref('')
 const loading = ref(false)
+const streaming = ref(false)
 const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 
@@ -37,64 +38,62 @@ async function send() {
   emit('update:messages', updated)
   inputText.value = ''
   loading.value = true
+  streaming.value = false
 
   // 保存用户消息到数据库
   if (props.character.id) {
     saveMessage(props.character.id, 'user', text).catch(() => {})
   }
 
-  // 创建 AI 占位消息用于流式更新
-  const aiPlaceholder: ChatMessage = { role: 'assistant', content: '' }
-  const withPlaceholder = [...updated, aiPlaceholder]
-  emit('update:messages', withPlaceholder)
-  scrollToBottom()
+  try {
+    let streamContent = ''
 
-  let fullReply = ''
-
-  await sendMessageStream(
-    props.character,
-    updated,
-    // onChunk
-    (chunk: string) => {
-      fullReply += chunk
-      // 更新占位消息内容
-      const current = [...props.messages]
-      const lastMsg = current[current.length - 1]
-      if (lastMsg && lastMsg.role === 'assistant') {
-        lastMsg.content = fullReply
-        emit('update:messages', [...current])
+    const replies = await sendMessageStream(
+      props.character,
+      updated,
+      (delta) => {
+        if (!streaming.value) {
+          // First chunk: switch from "思考中..." to streaming display
+          streaming.value = true
+        }
+        streamContent += delta
+        emit('update:messages', [
+          ...updated,
+          { role: 'assistant', content: streamContent }
+        ])
         scrollToBottom()
       }
-    },
-    // onDone
-    () => {
-      loading.value = false
-      if (!fullReply) {
-        // 如果没有收到任何内容，移除占位消息
-        const current = [...props.messages]
-        if (current.length > 0 && current[current.length - 1].role === 'assistant' && current[current.length - 1].content === '') {
-          current.pop()
-          emit('update:messages', current)
+    )
+
+    // Replace streaming message with cleaned/split replies
+    if (replies.length > 0) {
+      const finalMessages = [...updated]
+      for (const reply of replies) {
+        finalMessages.push({ role: 'assistant', content: reply })
+      }
+      emit('update:messages', finalMessages)
+
+      // 保存每条 AI 回复到数据库
+      if (props.character.id) {
+        for (const reply of replies) {
+          saveMessage(props.character.id, 'assistant', reply).catch(() => {})
         }
-        return
       }
-      // 保存完整 AI 回复到数据库
-      if (props.character.id && fullReply) {
-        saveMessage(props.character.id, 'assistant', fullReply).catch(() => {})
-      }
-    },
-    // onError
-    (errMsg: string) => {
-      loading.value = false
-      error.value = errMsg || '发送失败'
-      // 移除空的占位消息
-      const current = [...props.messages]
-      if (current.length > 0 && current[current.length - 1].role === 'assistant' && current[current.length - 1].content === '') {
-        current.pop()
-        emit('update:messages', current)
+    } else if (streamContent) {
+      // Fallback: no split replies received, use raw stream content
+      emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
+      if (props.character.id) {
+        saveMessage(props.character.id, 'assistant', streamContent).catch(() => {})
       }
     }
-  )
+  } catch (e: any) {
+    error.value = e.message || '发送失败'
+    // Remove placeholder on error
+    emit('update:messages', updated)
+  } finally {
+    loading.value = false
+    streaming.value = false
+  }
 }
 
 async function onClearHistory() {
@@ -143,7 +142,7 @@ function handleKeydown(e: KeyboardEvent) {
         <div class="message-bubble">{{ msg.content }}</div>
       </div>
 
-      <div v-if="loading && (!messages.length || messages[messages.length - 1].role !== 'assistant' || messages[messages.length - 1].content !== '')" class="message message-assistant">
+      <div v-if="loading && !streaming" class="message message-assistant">
         <div class="message-label">{{ character.name }}</div>
         <div class="message-bubble typing">思考中...</div>
       </div>

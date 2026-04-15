@@ -49,7 +49,7 @@ export async function sendMessage(
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ character, messages, characterId: character.id, stream: false }),
+    body: JSON.stringify({ character, messages, characterId: character.id }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -57,93 +57,6 @@ export async function sendMessage(
   }
   const data = await res.json();
   return data.replies || [data.reply];
-}
-
-/**
- * 流式发送消息，通过回调逐块接收内容
- */
-export async function sendMessageStream(
-  character: Character,
-  messages: ChatMessage[],
-  onChunk: (chunk: string) => void,
-  onDone: () => void,
-  onError: (error: string) => void
-): Promise<void> {
-  try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ character, messages, characterId: character.id, stream: true }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      onError(data.error || `请求失败 (${res.status})`);
-      return;
-    }
-
-    if (!res.body) {
-      onError('浏览器不支持流式响应');
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data:')) continue;
-        const dataStr = trimmed.slice(5).trim();
-        if (dataStr === '[DONE]') {
-          onDone();
-          return;
-        }
-        try {
-          const parsed = JSON.parse(dataStr);
-          if (parsed.error) {
-            onError(parsed.error);
-            return;
-          }
-          if (parsed.content) {
-            onChunk(parsed.content);
-          }
-        } catch {
-          // 忽略解析失败的行
-        }
-      }
-    }
-
-    // 处理 buffer 中残留
-    if (buffer.trim()) {
-      const trimmed = buffer.trim();
-      if (trimmed.startsWith('data:')) {
-        const dataStr = trimmed.slice(5).trim();
-        if (dataStr === '[DONE]') {
-          onDone();
-          return;
-        }
-        try {
-          const parsed = JSON.parse(dataStr);
-          if (parsed.content) {
-            onChunk(parsed.content);
-          }
-        } catch { /* ignore */ }
-      }
-    }
-
-    onDone();
-  } catch (err: any) {
-    onError(err.message || '网络错误');
-  }
 }
 
 // ====== 角色数据 ======
@@ -193,4 +106,62 @@ export async function saveMessage(characterId: number, role: string, content: st
 
 export async function clearMessages(characterId: number): Promise<void> {
   await fetch(`/api/data/messages/${characterId}`, { method: 'DELETE' });
+}
+
+// ====== 流式聊天 ======
+
+export async function sendMessageStream(
+  character: Character,
+  messages: ChatMessage[],
+  onDelta: (content: string) => void
+): Promise<string[]> {
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character, messages, characterId: character.id }),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `请求失败 (${res.status})`);
+  }
+
+  if (!res.body) {
+    throw new Error('响应体为空');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let replies: string[] = [];
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+      const data = trimmed.slice(6).trim();
+      if (data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.delta) onDelta(parsed.delta);
+        if (parsed.replies) replies = parsed.replies;
+        if (parsed.error) throw new Error(parsed.error);
+      } catch (e: any) {
+        // Only rethrow application errors, not JSON parse errors from partial SSE chunks
+        if (e instanceof SyntaxError) continue;
+        throw e;
+      }
+    }
+  }
+
+  return replies;
 }
