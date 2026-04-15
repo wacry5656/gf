@@ -47,6 +47,7 @@ export async function sendMessage(
   messages: ChatMessage[],
   userId?: number
 ): Promise<string[]> {
+  if (character.id && !userId) throw new Error('缺少 userId 参数');
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -91,6 +92,7 @@ export async function deleteCharacter(characterId: number, userId: number): Prom
 // ====== 聊天记录 ======
 
 export async function getMessages(characterId: number, userId?: number): Promise<ChatMessage[]> {
+  if (characterId && !userId) throw new Error('缺少 userId 参数');
   const params = userId ? `?userId=${userId}` : '';
   const res = await fetch(`/api/data/messages/${characterId}${params}`);
   const data = await res.json();
@@ -99,18 +101,28 @@ export async function getMessages(characterId: number, userId?: number): Promise
 }
 
 export async function saveMessage(characterId: number, role: string, content: string, userId?: number): Promise<void> {
+  if (characterId && !userId) throw new Error('缺少 userId 参数');
   const body: Record<string, unknown> = { characterId, role, content };
   if (userId) body.userId = userId;
-  await fetch('/api/data/messages', {
+  const res = await fetch('/api/data/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || '保存消息失败');
+  }
 }
 
 export async function clearMessages(characterId: number, userId?: number): Promise<void> {
+  if (characterId && !userId) throw new Error('缺少 userId 参数');
   const params = userId ? `?userId=${userId}` : '';
-  await fetch(`/api/data/messages/${characterId}${params}`, { method: 'DELETE' });
+  const res = await fetch(`/api/data/messages/${characterId}${params}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || '清空消息失败');
+  }
 }
 
 // ====== 情绪状态 ======
@@ -160,6 +172,7 @@ export async function sendMessageStream(
   onDelta: (content: string) => void,
   userId?: number
 ): Promise<string[]> {
+  if (character.id && !userId) throw new Error('缺少 userId 参数');
   const res = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
