@@ -169,8 +169,6 @@ export function updateEmotionState(
 
   // 情绪稳定机制：没有明显触发时不改 mood
   if (!moodChanged) {
-    // 微弱正向漂移
-    affection += 0.001;
     // trust 高时更容易回到 warm
     if (relTrust >= 0.65 && (mood === 'upset' || mood === 'distant')) {
       if (Math.random() < 0.3) {

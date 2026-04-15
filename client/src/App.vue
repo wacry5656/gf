@@ -20,7 +20,7 @@ onMounted(() => {
     try {
       user.value = JSON.parse(saved)
       loadCharacters()
-    } catch { /* ignore */ }
+    } catch (e) { console.error('[App] 解析本地用户数据失败:', e) }
   }
 })
 
@@ -70,7 +70,7 @@ async function selectCharacter(char: Character) {
   if (char.id && user.value) {
     try {
       chatMessages.value = await getMessages(char.id, user.value.userId)
-    } catch { /* ignore */ }
+    } catch (e) { console.error('[App] 加载历史消息失败:', e) }
   }
 }
 
