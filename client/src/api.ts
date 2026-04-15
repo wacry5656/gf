@@ -23,7 +23,7 @@ interface AuthResponsePayload {
 }
 
 function parseJsonText(text: string): unknown {
-  if (!text) return null;
+  if (!text || text.trim() === '') return null;
   // Callers intentionally handle invalid JSON so they can fall back to
   // proxy-safe error messages or partial stream recovery behavior.
   return JSON.parse(text);
@@ -324,6 +324,7 @@ export async function sendMessageStream(
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
+        // Final flush for any bytes buffered inside TextDecoder at stream end.
         buffer += decoder.decode();
         break;
       }
@@ -333,6 +334,7 @@ export async function sendMessageStream(
     }
   } catch (readErr) {
     streamReadError = readErr;
+    // Final flush even on read failure so already-received bytes can be parsed.
     buffer += decoder.decode();
   }
 
