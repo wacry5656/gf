@@ -107,3 +107,60 @@ export async function saveMessage(characterId: number, role: string, content: st
 export async function clearMessages(characterId: number): Promise<void> {
   await fetch(`/api/data/messages/${characterId}`, { method: 'DELETE' });
 }
+
+// ====== 流式聊天 ======
+
+export async function sendMessageStream(
+  character: Character,
+  messages: ChatMessage[],
+  onDelta: (content: string) => void
+): Promise<string[]> {
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character, messages, characterId: character.id }),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `请求失败 (${res.status})`);
+  }
+
+  if (!res.body) {
+    throw new Error('响应体为空');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let replies: string[] = [];
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+      const data = trimmed.slice(6).trim();
+      if (data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.delta) onDelta(parsed.delta);
+        if (parsed.replies) replies = parsed.replies;
+        if (parsed.error) throw new Error(parsed.error);
+      } catch (e: any) {
+        // Only rethrow if it's a real error, not a JSON parse error
+        if (e.message && !e.message.includes('JSON')) throw e;
+      }
+    }
+  }
+
+  return replies;
+}
