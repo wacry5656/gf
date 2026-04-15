@@ -120,6 +120,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
 
 chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
   const totalStart = Date.now();
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   try {
     const { character, messages } = req.body as ChatRequestBody;
     const characterId = req.body.characterId || character?.id;
@@ -148,32 +149,61 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         const recentMessages = messages.slice(-memoryConfig.recentMessageLimit);
         const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
 
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no');
         res.flushHeaders();
 
+        // Send ready event immediately
+        res.write('event: ready\ndata: {"ok":true}\n\n');
+        console.log(`[Chat/Stream][degraded] ready 已发送`);
+
         const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
         const maxTokens = getMaxTokens(currentUserText);
         const controller = new AbortController();
-        req.on('close', () => controller.abort());
+        let firstChunkSent = false;
+
+        // Heartbeat to keep connection alive
+        const degradedHeartbeat = setInterval(() => {
+          if (!controller.signal.aborted) {
+            res.write(': ping\n\n');
+          }
+        }, 12000);
+
+        req.on('close', () => {
+          console.log(`[Chat/Stream][degraded] 客户端断开, firstChunkSent=${firstChunkSent}`);
+          clearInterval(degradedHeartbeat);
+          controller.abort();
+        });
 
         try {
           const fullReply = await callQwenAPIStream(
             fullMessages,
-            (chunk) => { if (!controller.signal.aborted) res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`); },
+            (chunk) => {
+              if (!controller.signal.aborted) {
+                if (!firstChunkSent) {
+                  firstChunkSent = true;
+                  console.log(`[Chat/Stream][degraded] 第一个 chunk 已发送`);
+                }
+                res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+              }
+            },
             controller.signal,
             maxTokens
           );
+          clearInterval(degradedHeartbeat);
           const cleaned = cleanReply(fullReply);
           const replies = splitReply(cleaned);
           if (!controller.signal.aborted) {
             res.write(`data: ${JSON.stringify({ replies })}\n\n`);
             res.write('data: [DONE]\n\n');
+            console.log(`[Chat/Stream][degraded] done 已发送`);
             res.end();
           }
         } catch (streamErr: any) {
+          clearInterval(degradedHeartbeat);
+          console.error(`[Chat/Stream][degraded] 流式异常:`, streamErr?.stack || streamErr);
           if (!controller.signal.aborted) {
             res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
             res.write('data: [DONE]\n\n');
@@ -187,15 +217,31 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     }
 
     // SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
+    // Send ready event immediately so the client knows connection is established
+    res.write('event: ready\ndata: {"ok":true}\n\n');
+    console.log(`[Chat/Stream] ready 已发送, characterId=${characterId}, userId=${reqUserId}`);
+
+    // Heartbeat to keep connection alive through proxies
+    heartbeatTimer = setInterval(() => {
+      if (!controller.signal.aborted) {
+        res.write(': ping\n\n');
+      }
+    }, 12000);
+
     // Abort streaming if client disconnects
     const controller = new AbortController();
-    req.on('close', () => controller.abort());
+    let firstChunkSent = false;
+    req.on('close', () => {
+      console.log(`[Chat/Stream] 客户端断开, characterId=${characterId}, firstChunkSent=${firstChunkSent}`);
+      clearInterval(heartbeatTimer);
+      controller.abort();
+    });
 
     // 构建四层上下文（已优化为并行获取）
     const contextStart = Date.now();
@@ -214,15 +260,21 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         fullMessages,
         (chunk) => {
           if (!controller.signal.aborted) {
+            if (!firstChunkSent) {
+              firstChunkSent = true;
+              console.log(`[Chat/Stream] 第一个 chunk 已发送, characterId=${characterId}`);
+            }
             res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
           }
         },
         controller.signal,
         maxTokens
       );
+      clearInterval(heartbeatTimer);
       console.log(`[Chat/Stream] Qwen 流式调用结束, 耗时=${Date.now() - apiStart}ms, 回复长度=${fullReply.length}`);
     } catch (streamErr: any) {
-      console.error(`[Chat/Stream] Qwen 流式调用异常:`, streamErr);
+      clearInterval(heartbeatTimer);
+      console.error(`[Chat/Stream] Qwen 流式调用异常:`, streamErr?.stack || streamErr);
       if (!controller.signal.aborted) {
         res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
         res.write('data: [DONE]\n\n');
@@ -238,6 +290,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     if (!controller.signal.aborted) {
       res.write(`data: ${JSON.stringify({ replies })}\n\n`);
       res.write('data: [DONE]\n\n');
+      console.log(`[Chat/Stream] done 已发送, characterId=${characterId}`);
       res.end();
     }
 
@@ -298,6 +351,9 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     }
   } catch (err: any) {
     console.error('[Chat/Stream] 未捕获异常:', err?.message || err, err?.stack || '');
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
     if (!res.headersSent) {
       res.status(500).json({ error: '服务器内部错误，请稍后重试' });
     } else {
