@@ -77,6 +77,13 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
       db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
       // 删除角色记录（额外检查 user_id 作为安全防护，防止 TOCTOU 竞态）
       const result = db.prepare('DELETE FROM characters WHERE id = ? AND user_id = ?').run(charId, userId);
+      // 如果用户已无其他角色，清理其 personality_memory
+      if (result.changes > 0) {
+        const remaining = db.prepare('SELECT COUNT(*) as cnt FROM characters WHERE user_id = ?').get(userId) as { cnt: number };
+        if (remaining.cnt === 0) {
+          db.prepare('DELETE FROM personality_memory WHERE user_id = ?').run(userId);
+        }
+      }
       return result;
     });
 

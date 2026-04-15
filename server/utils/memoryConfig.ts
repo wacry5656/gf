@@ -45,6 +45,12 @@ export const memoryConfig = {
   get stateTtlDays() { return num('MEMORY_STATE_TTL_DAYS', 7); },
   get planTtlDays() { return num('MEMORY_PLAN_TTL_DAYS', 30); },
 
+  // ---- 人格记忆 ----
+  get personalityEnabled() { return bool('PERSONALITY_MEMORY_ENABLED', true); },
+  get personalityTopK() { return num('PERSONALITY_TOP_K', 5); },
+  get personalityExtractIntervalMs() { return num('PERSONALITY_EXTRACT_INTERVAL_MS', 10 * 60 * 1000); }, // 10分钟
+  get personalityExtractMessageThreshold() { return num('PERSONALITY_EXTRACT_MSG_THRESHOLD', 10); },
+
   // ---- 调试 ----
   get debugRetrieval() { return bool('DEBUG_MEMORY_RETRIEVAL', false); },
 };
