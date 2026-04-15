@@ -132,7 +132,7 @@ dataRouter.get('/messages/:characterId', (req: Request, res: Response) => {
     res.json({ messages });
   } catch (err: any) {
     console.error('Get messages error:', err?.message);
-    // 读取消息失败时返回空数组而不是崩溃
+    // 读取消息失败时返回空数组而不是崩溃（可能是脏数据/旧角色）
     res.json({ messages: [] });
   }
 });
