@@ -184,6 +184,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       const validReplies = replies.filter(r => r.trim().length > 0);
       if (validReplies.length > 0) {
         setImmediate(() => {
+          if (controller.signal.aborted) return;
           try {
             for (const reply of validReplies) {
               db.prepare(
