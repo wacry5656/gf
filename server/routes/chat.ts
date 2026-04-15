@@ -123,15 +123,17 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
   try {
     const { character, messages } = req.body as ChatRequestBody;
     const characterId = req.body.characterId || character?.id;
+    const reqUserId = req.body.userId;
 
     if (!character || !messages || !Array.isArray(messages)) {
       res.status(400).json({ error: '请求参数不完整' });
       return;
     }
 
+    console.log(`[Chat/Stream] 收到请求: characterId=${characterId ?? '未提供'}, userId=${reqUserId ?? '未提供'}`);
+
     // 角色归属权限校验
     if (characterId) {
-      const reqUserId = req.body.userId;
       if (!reqUserId) {
         console.warn('[Chat/Stream] characterId 存在但缺少 userId，拒绝请求');
         res.status(401).json({ error: '请重新登录（缺少用户身份）' });
@@ -198,7 +200,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     // 构建四层上下文（已优化为并行获取）
     const contextStart = Date.now();
     const fullMessages = await buildChatContext(character, messages, characterId);
-    console.log(`[Perf] 上下文构建耗时: ${Date.now() - contextStart}ms`);
+    console.log(`[Chat/Stream] buildChatContext 成功, 消息数=${fullMessages.length}, 耗时=${Date.now() - contextStart}ms`);
 
     // 获取用户输入用于动态 max_tokens
     const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
@@ -206,6 +208,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     let fullReply = '';
     const apiStart = Date.now();
+    console.log(`[Chat/Stream] Qwen 流式调用开始, characterId=${characterId}`);
     try {
       fullReply = await callQwenAPIStream(
         fullMessages,
@@ -217,8 +220,9 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         controller.signal,
         maxTokens
       );
-      console.log(`[Perf] Qwen API 流式调用耗时: ${Date.now() - apiStart}ms`);
+      console.log(`[Chat/Stream] Qwen 流式调用结束, 耗时=${Date.now() - apiStart}ms, 回复长度=${fullReply.length}`);
     } catch (streamErr: any) {
+      console.error(`[Chat/Stream] Qwen 流式调用异常:`, streamErr);
       if (!controller.signal.aborted) {
         res.write(`data: ${JSON.stringify({ error: streamErr?.message || '请求失败' })}\n\n`);
         res.write('data: [DONE]\n\n');
@@ -293,7 +297,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       }
     }
   } catch (err: any) {
-    console.error('Chat stream error:', err?.message || err);
+    console.error('[Chat/Stream] 未捕获异常:', err?.message || err, err?.stack || '');
     if (!res.headersSent) {
       res.status(500).json({ error: '服务器内部错误，请稍后重试' });
     } else {
