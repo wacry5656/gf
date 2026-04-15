@@ -129,7 +129,8 @@ async function onClearHistory() {
   try {
     await clearMessages(props.character.id, props.userId)
     emit('update:messages', [])
-  } catch {
+  } catch (e) {
+    console.error('[ChatWindow] 清空聊天记录失败:', e)
     error.value = '清空失败'
   }
 }
