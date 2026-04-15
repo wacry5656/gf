@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
+import { getEmotionState, type Mood } from '../services/emotion';
 
 export const dataRouter = Router();
 
@@ -75,6 +76,7 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
       db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM memories WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM emotion_state WHERE character_id = ?').run(charId);
       // 删除角色记录（额外检查 user_id 作为安全防护，防止 TOCTOU 竞态）
       const result = db.prepare('DELETE FROM characters WHERE id = ? AND user_id = ?').run(charId, userId);
       // 如果用户已无其他角色，清理其 personality_memory
@@ -147,5 +149,40 @@ dataRouter.delete('/messages/:characterId', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Clear messages error:', err?.message);
     res.status(500).json({ error: '清空聊天记录失败' });
+  }
+});
+
+// ====== 情绪状态 ======
+
+const MOOD_LABEL: Record<Mood, string> = {
+  warm: '温柔',
+  happy: '开心',
+  playful: '俏皮',
+  shy: '害羞',
+  caring: '体贴',
+  upset: '有点委屈',
+  jealous: '吃醋',
+  distant: '有点冷淡',
+};
+
+dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : null;
+    if (!characterId || !userId) {
+      res.status(400).json({ error: '缺少参数' });
+      return;
+    }
+    const state = getEmotionState(userId, characterId);
+    res.json({
+      mood: state.mood,
+      moodLabel: MOOD_LABEL[state.mood || 'warm'] || '温柔',
+      affection: state.affection,
+      trust_score: state.trust_score,
+      jealousy_score: state.jealousy_score,
+    });
+  } catch (err: any) {
+    console.error('Get emotion error:', err?.message);
+    res.status(500).json({ error: '获取情绪状态失败' });
   }
 });
