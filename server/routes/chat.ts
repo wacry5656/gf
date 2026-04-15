@@ -143,7 +143,9 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       try {
         res.write(`data: ${JSON.stringify({ error: '服务器内部错误' })}\n\n`);
         res.end();
-      } catch { /* client already disconnected */ }
+      } catch {
+        // Client already disconnected, nothing to do
+      }
     }
   }
 });

@@ -156,8 +156,9 @@ export async function sendMessageStream(
         if (parsed.replies) replies = parsed.replies;
         if (parsed.error) throw new Error(parsed.error);
       } catch (e: any) {
-        // Only rethrow if it's a real error, not a JSON parse error
-        if (e.message && !e.message.includes('JSON')) throw e;
+        // Only rethrow application errors, not JSON parse errors from partial SSE chunks
+        if (e instanceof SyntaxError) continue;
+        throw e;
       }
     }
   }
