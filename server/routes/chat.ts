@@ -611,11 +611,16 @@ interface SystemPromptParams {
 interface PersonalityStyleProfile {
   label: string;
   summary: string;
-  rules: [string, string];
+  rules: string[];
 }
 
 function resolvePersonalityStyle(personality: string, description: string): PersonalityStyleProfile {
   const text = `${personality} ${description}`.trim();
+  const defaultProfile: PersonalityStyleProfile = {
+    label: '自然型',
+    summary: '亲密自然，口语化，会接话，但不过分黏',
+    rules: ['会顺着话题聊下去，不端着', '表达有温度，但不过度用力'],
+  };
   const profiles: Array<{ keywords: string[]; profile: PersonalityStyleProfile }> = [
     {
       keywords: ['傲娇', '嘴硬', '别扭'],
@@ -659,7 +664,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
     },
   ];
 
-  let bestProfile = profiles[profiles.length - 1].profile;
+  let bestProfile = defaultProfile;
   let bestScore = 0;
   for (const { keywords, profile } of profiles) {
     const score = keywords.reduce((total, keyword) => total + (text.includes(keyword) ? 1 : 0), 0);
@@ -673,11 +678,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
     return bestProfile;
   }
 
-  return {
-    label: '自然型',
-    summary: '亲密自然，口语化，会接话，但不过分黏',
-    rules: ['会顺着话题聊下去，不端着', '表达有温度，但不过度用力'],
-  };
+  return defaultProfile;
 }
 
 /**
@@ -689,14 +690,15 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relat
   const personalityStyle = resolvePersonalityStyle(character.personality, character.description);
   const emotionBlock = emotionPrompt || '自然亲近';
   const relationshipBlock = relationshipPrompt || '像日常恋人一样聊天';
+  const personalityRules = personalityStyle.rules.map(rule => `- ${rule}`).join('\n');
 
   const blocks = [
     `你是${character.name}，用户的恋人。`,
-    `【性格定义】\n性格：${personalityStyle.label}\n说话风格：\n- ${personalityStyle.summary}\n- ${personalityStyle.rules[0]}\n- ${personalityStyle.rules[1]}`,
+    `【性格定义】\n性格：${personalityStyle.label}\n说话风格：\n- ${personalityStyle.summary}\n${personalityRules}`,
     '【关系状态】\n关系：恋人（亲密自然，不是朋友）',
     personalitySummary ? `【用户长期特征】\n${personalitySummary}` : '',
-    `【当前情绪】\n情绪：${emotionBlock}\n规则：\n- 情绪必须带进语气：冷=短+少回应，开心=更主动+多一点话`,
-    `【关系强度】\n亲密度：${relationshipBlock}\n规则：\n- 高→更主动、更暧昧\n- 低→克制、试探`,
+    `【当前情绪】\n情绪：${emotionBlock}\n规则：\n- 情绪必须带进语气：冷的时候更短、更少回应；开心的时候更主动、多一点话`,
+    `【关系强度】\n亲密度：${relationshipBlock}\n规则：\n- 高亲密度时更主动、更暧昧\n- 低亲密度时更克制、更试探`,
     '【表达规则】\n- 像微信聊天：短句，一行一句\n- 每次回复2~3行\n- 可有语气词（嗯、啊、欸、emmm）\n- 偶尔用emoji（不要每句都用）\n- 必须接住对方的话，问句要答',
     '【严格禁止】\n- 不要写心理描写、动作描写、场景描写\n- 不要解释自己\n- 不要长段落\n- 不要像AI',
   ].filter(Boolean).join('\n');
