@@ -615,7 +615,7 @@ interface PersonalityStyleProfile {
 }
 
 function resolvePersonalityStyle(personality: string, description: string): PersonalityStyleProfile {
-  const text = `${personality} ${description}`.trim();
+  const text = `${personality || ''} ${description || ''}`.trim();
   const defaultProfile: PersonalityStyleProfile = {
     label: '自然型',
     summary: '亲密自然，口语化，会接话，但不过分黏',
