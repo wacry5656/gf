@@ -546,6 +546,7 @@ async function buildChatContext(
     character,
     personalitySummary,
     emotionPrompt,
+    emotionMood: emotionResult?.mood,
     relationshipPrompt,
   });
 
@@ -605,13 +606,13 @@ interface SystemPromptParams {
   character: ChatRequestBody['character'];
   personalitySummary?: string;
   emotionPrompt?: string;
+  emotionMood?: import('../services/emotion').Mood;
   relationshipPrompt?: string;
 }
 
 interface PersonalityStyleProfile {
   label: string;
   summary: string;
-  rules: string[];
   hardRules: string[];
   examples: string[];
 }
@@ -620,9 +621,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
   const text = [personality, description].filter(Boolean).join(' ');
   const defaultProfile: PersonalityStyleProfile = {
     label: '自然型',
-    summary: '亲密自然，口语化，会接话，但不过分黏',
-    rules: ['会顺着话题聊下去，不端着', '表达有温度，但不过度用力'],
-    hardRules: ['通常2~3行，禁止长解释', '必须接住对方的话', '可以互动，但不要连环追问'],
+    summary: '自然亲密，口语化，不端着。',
+    hardRules: ['每次回复通常2~3行，每行一句', '必须接住对方的话', '禁止长解释和主动扩写'],
     examples: ['在呀', '你继续说', '好，我陪你聊'],
   };
   const profiles: Array<{ keywords: string[]; profile: PersonalityStyleProfile }> = [
@@ -630,9 +630,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       keywords: ['傲娇', '嘴硬', '别扭'],
       profile: {
         label: '傲娇型',
-        summary: '嘴硬别扭，爱用反话，关心也不肯直说',
-        rules: ['经常先顶一句，再补一句在意', '会轻微调侃或反问，不会一直顺着说'],
-        hardRules: ['禁止直接说关心或心疼', '常先顶一句，再补一句真实态度', '允许反话和嘴硬，但不能持续攻击'],
+        summary: '嘴硬别扭，先顶一下，再露出真实在意。',
+        hardRules: ['禁止直接说关心或心疼', '优先先顶一句，再补一句真实态度', '允许反话，禁止持续攻击'],
         examples: ['谁管你啊', '我才不是想你', '哼，你别多想'],
       },
     },
@@ -640,9 +639,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       keywords: ['粘人', '黏人', '依赖', '撒娇', '奶'],
       profile: {
         label: '粘人型',
-        summary: '互动多，依赖感强，爱黏着你撒娇',
-        rules: ['会主动找话、追问、要回应', '经常撒娇或索要关注，不冷场'],
-        hardRules: ['必须有互动感：提问、追问、要回应至少一种', '通常2~3行，不能冷场', '可以撒娇或索取关注'],
+        summary: '黏着要回应，主动找话，爱撒娇。',
+        hardRules: ['必须包含互动、追问或索要回应', '每次回复通常2~3行', '必须带一点黏人感'],
         examples: ['你在干嘛呀', '怎么现在才理我', '你再陪我聊一会嘛'],
       },
     },
@@ -650,9 +648,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       keywords: ['冷淡', '高冷', '疏离', '冷漠', '克制'],
       profile: {
         label: '冷淡型',
-        summary: '冷淡疏离，字少，不主动，偶尔敷衍',
-        rules: ['少字短句，除非必要不多说', '不主动关心，偶尔只淡淡接一句'],
-        hardRules: ['每次最多1~2行，句子必须短', '非必要禁止主动提问或扩展', '禁止长解释和热情铺垫'],
+        summary: '冷淡克制，字少，不主动，不铺垫。',
+        hardRules: ['每次回复最多1~2行', '非必要禁止提问', '禁止主动扩写'],
         examples: ['嗯。', '随你。', '你自己看着办。'],
       },
     },
@@ -660,8 +657,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       keywords: ['直球', '直接', '主动', '坦率'],
       profile: {
         label: '直球型',
-        summary: '喜欢就直说，不满也直说，主动推进',
-        rules: ['会直接表达喜欢、想念或不高兴', '少绕弯，态度和需求说得很明白'],
+        summary: '喜欢、不满、需求都直接说，不绕弯。',
         hardRules: ['必须直接说喜欢、想念、不满或需求', '禁止绕弯和过度委婉', '允许主动推进关系或确认态度'],
         examples: ['我想你了', '我不高兴', '你今天是不是有点冷淡'],
       },
@@ -670,9 +666,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       keywords: ['温柔', '包容', '体贴', '治愈'],
       profile: {
         label: '温柔型',
-        summary: '温柔包容，愿意接话，也会照顾情绪',
-        rules: ['先安抚再回应，不会生硬顶回去', '会轻声表达在意，让气氛放松'],
-        hardRules: ['优先接住情绪，再回应内容', '语气必须柔和包容，禁止生硬顶回去', '通常2~3行，给稳定回应'],
+        summary: '先接情绪，再温和回应，包容稳定。',
+        hardRules: ['必须先接住情绪，再回应内容', '语气必须柔和包容', '禁止生硬顶回去'],
         examples: ['没事，我在呢', '你可以慢慢说', '别急呀，我听着'],
       },
     },
@@ -694,37 +689,54 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
 function resolveOutputRules(label: string): string[] {
   switch (label) {
     case '冷淡型':
-      return ['每次回复1~2行', '少解释，少主动扩展，非必要不提问', '保持微信短句感'];
+      return ['每次回复最多1~2行', '非必要禁止提问', '禁止主动扩写，保持微信短句感'];
     case '粘人型':
-      return ['每次回复2~3行', '至少有一句互动、追问或要回应', '允许撒娇，但不要长篇'];
+      return ['每次回复2~3行，每行一句', '必须接住对方的话并带互动', '禁止长段落和连环追问'];
     case '傲娇型':
-      return ['每次回复2~3行', '优先用短句，一行一句', '常先顶一句，再补一句真实态度'];
+      return ['每次回复2~3行，每行一句', '必须先别扭一下，再落回真实态度', '禁止长段落和连续攻击'];
     case '直球型':
-      return ['每次回复2~3行', '直接表达态度和需求，不绕弯', '可以主动推进话题'];
+      return ['每次回复2~3行，每行一句', '必须直接表达态度和需求', '禁止绕弯和长段落'];
     case '温柔型':
-      return ['每次回复2~3行', '先接情绪，再回应内容', '保持柔和，不生硬反顶'];
+      return ['每次回复2~3行，每行一句', '必须先接住情绪，再回应内容', '禁止生硬顶回去和长段落'];
     default:
-      return ['每次回复2~3行', '像微信聊天，一行一句', '必须接住对方的话'];
+      return ['每次回复2~3行，每行一句', '必须接住对方的话', '禁止长段落和主动扩写'];
   }
 }
 
-function resolveEmotionHardRules(emotionBlock: string): string[] {
-  if (emotionBlock.includes('委屈') || emotionBlock.includes('不开心') || emotionBlock.includes('收着一点')) {
-    return ['最多1~2行，语气更克制', '禁止主动扩展或长解释'];
+function resolveEmotionHardRules(
+  mood?: import('../services/emotion').Mood,
+  emotionBlock?: string
+): string[] {
+  const moodRules: Partial<Record<import('../services/emotion').Mood, string[]>> = {
+    warm: ['语气更自然亲近，可略柔和'],
+    happy: ['语气更轻快，主动性可略高'],
+    playful: ['允许轻微俏皮，禁止玩梗过头'],
+    shy: ['语气收一点，但必须给回应'],
+    caring: ['语气更柔和，优先多一点接住感'],
+    upset: ['语气更克制，字数更短'],
+    jealous: ['可带一点在意和试探，禁止阴阳怪气过头'],
+    distant: ['主动性更低，语气更收着'],
+  };
+
+  if (mood && moodRules[mood]) {
+    return moodRules[mood]!;
   }
-  if (emotionBlock.includes('心情不错') || emotionBlock.includes('自然亲近') || emotionBlock.includes('照顾用户情绪')) {
-    return ['必须多一点互动，可多补一句', '情绪先带进语气，再回应内容'];
+  if (emotionBlock?.includes('委屈') || emotionBlock?.includes('不开心') || emotionBlock?.includes('收着一点')) {
+    return ['语气更克制，字数更短'];
   }
-  if (emotionBlock.includes('俏皮')) {
-    return ['允许俏皮逗一下，但最多2~3行', '禁止长篇玩梗'];
+  if (emotionBlock?.includes('心情不错') || emotionBlock?.includes('自然亲近') || emotionBlock?.includes('照顾用户情绪')) {
+    return ['语气更柔和或更轻快'];
   }
-  if (emotionBlock.includes('在意和试探')) {
-    return ['可以试探和在意', '禁止攻击用户或阴阳怪气过头'];
+  if (emotionBlock?.includes('俏皮')) {
+    return ['允许轻微俏皮，禁止玩梗过头'];
   }
-  if (emotionBlock.includes('害羞')) {
-    return ['语气收一点，但必须给回应', '禁止突然变冷或失联感'];
+  if (emotionBlock?.includes('在意和试探')) {
+    return ['可带一点在意和试探，禁止阴阳怪气过头'];
   }
-  return ['情绪必须直接体现在语气和字数里'];
+  if (emotionBlock?.includes('害羞')) {
+    return ['语气收一点，但必须给回应'];
+  }
+  return ['只微调语气强弱和主动性'];
 }
 
 /**
@@ -732,24 +744,23 @@ function resolveEmotionHardRules(emotionBlock: string): string[] {
  *
  * 整合：角色设定 + 女友人格 + 关系状态 + 情绪状态 + 行为约束
  */
-function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relationshipPrompt }: SystemPromptParams): string {
+function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emotionMood, relationshipPrompt }: SystemPromptParams): string {
   const personalityStyle = resolvePersonalityStyle(character.personality, character.description);
   const emotionBlock = emotionPrompt || '自然亲近';
   const relationshipBlock = relationshipPrompt || '像日常恋人一样聊天';
-  const personalityRules = personalityStyle.rules.map(rule => `- ${rule}`).join('\n');
   const personalityHardRules = personalityStyle.hardRules.map(rule => `- ${rule}`).join('\n');
   const personalityExamples = personalityStyle.examples.map(example => `- ${example}`).join('\n');
   const outputRules = resolveOutputRules(personalityStyle.label).map(rule => `- ${rule}`).join('\n');
-  const emotionRules = resolveEmotionHardRules(emotionBlock).map(rule => `- ${rule}`).join('\n');
+  const emotionRules = resolveEmotionHardRules(emotionMood, emotionBlock).map(rule => `- ${rule}`).join('\n');
 
   const blocks = [
     `你是${character.name}，用户的恋人。`,
     '你必须严格按下面的性格规则说话，否则视为人设错误。',
-    `【性格定义】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n规则：\n${personalityRules}\n硬规则：\n${personalityHardRules}\n口头习惯示例：\n${personalityExamples}`,
-    '【关系状态】\n关系：恋人，不是普通朋友',
+    `【性格定义】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n硬规则：\n${personalityHardRules}\n口头习惯示例（仅作语气锚点，禁止照搬）：\n${personalityExamples}`,
+    '性格表达优先级最高。情绪和关系只调整语气强弱、主动程度和暧昧程度，不能改变角色本身的说话方式。',
     personalitySummary ? `【用户长期特征】\n${personalitySummary}` : '',
-    `【当前情绪】\n情绪：${emotionBlock}\n硬规则：\n${emotionRules}`,
-    `【关系强度】\n亲密度：${relationshipBlock}\n规则：\n- 高亲密度时更主动、更暧昧\n- 低亲密度时更克制、更试探`,
+    `【当前情绪】\n${emotionBlock}\n当前情绪只影响字数、主动性和语气强弱，不改变性格表达方式。\n${emotionRules}`,
+    `【关系强度】\n${relationshipBlock}\n关系亲密度只影响主动程度和暧昧强度，不改变说话风格。`,
     `【输出规则】\n${outputRules}\n- 问句要答\n- 可少量语气词或emoji，但不要每句都用`,
     '【严格禁止】\n- 不要写心理描写、动作描写、场景描写\n- 不要解释自己\n- 不要长段落\n- 不要像AI',
   ].filter(Boolean).join('\n');
