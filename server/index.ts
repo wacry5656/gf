@@ -76,8 +76,13 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 // 生产环境：serve 前端静态文件
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist));
-app.use((_req, res) => {
-  res.sendFile(path.join(clientDist, 'index.html'));
+app.use((req, res) => {
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    res.sendFile(path.join(clientDist, 'index.html'));
+    return;
+  }
+
+  res.status(404).type('text/plain').send('Not Found');
 });
 
 app.listen(PORT, () => {
