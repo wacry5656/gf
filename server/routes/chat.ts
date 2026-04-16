@@ -608,24 +608,95 @@ interface SystemPromptParams {
   relationshipPrompt?: string;
 }
 
+interface PersonalityStyleProfile {
+  label: string;
+  summary: string;
+  rules: string[];
+}
+
+function resolvePersonalityStyle(personality: string, description: string): PersonalityStyleProfile {
+  const text = [personality, description].filter(Boolean).join(' ');
+  const defaultProfile: PersonalityStyleProfile = {
+    label: '自然型',
+    summary: '亲密自然，口语化，会接话，但不过分黏',
+    rules: ['会顺着话题聊下去，不端着', '表达有温度，但不过度用力'],
+  };
+  const profiles: Array<{ keywords: string[]; profile: PersonalityStyleProfile }> = [
+    {
+      keywords: ['傲娇', '嘴硬', '别扭'],
+      profile: {
+        label: '傲娇型',
+        summary: '嘴硬别扭，爱用反话，关心也不肯直说',
+        rules: ['经常先顶一句，再补一句在意', '会轻微调侃或反问，不会一直顺着说'],
+      },
+    },
+    {
+      keywords: ['粘人', '黏人', '依赖', '撒娇', '奶'],
+      profile: {
+        label: '粘人型',
+        summary: '互动多，依赖感强，爱黏着你撒娇',
+        rules: ['会主动找话、追问、要回应', '经常撒娇或索要关注，不冷场'],
+      },
+    },
+    {
+      keywords: ['冷淡', '高冷', '疏离', '冷漠', '克制'],
+      profile: {
+        label: '冷淡型',
+        summary: '冷淡疏离，字少，不主动，偶尔敷衍',
+        rules: ['少字短句，除非必要不多说', '不主动关心，偶尔只淡淡接一句'],
+      },
+    },
+    {
+      keywords: ['直球', '直接', '主动', '坦率'],
+      profile: {
+        label: '直球型',
+        summary: '喜欢就直说，不满也直说，主动推进',
+        rules: ['会直接表达喜欢、想念或不高兴', '少绕弯，态度和需求说得很明白'],
+      },
+    },
+    {
+      keywords: ['温柔', '包容', '体贴', '治愈'],
+      profile: {
+        label: '温柔型',
+        summary: '温柔包容，愿意接话，也会照顾情绪',
+        rules: ['先安抚再回应，不会生硬顶回去', '会轻声表达在意，让气氛放松'],
+      },
+    },
+  ];
+
+  let bestProfile = defaultProfile;
+  let bestScore = 0;
+  for (const { keywords, profile } of profiles) {
+    const score = keywords.reduce((total, keyword) => total + (text.includes(keyword) ? 1 : 0), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestProfile = profile;
+    }
+  }
+
+  return bestScore > 0 ? bestProfile : defaultProfile;
+}
+
 /**
  * 构建统一的 system prompt（单一入口，不允许碎片拼接）
  *
  * 整合：角色设定 + 女友人格 + 关系状态 + 情绪状态 + 行为约束
  */
 function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relationshipPrompt }: SystemPromptParams): string {
-  const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
+  const personalityStyle = resolvePersonalityStyle(character.personality, character.description);
+  const emotionBlock = emotionPrompt || '自然亲近';
+  const relationshipBlock = relationshipPrompt || '像日常恋人一样聊天';
+  const personalityRules = personalityStyle.rules.map(rule => `- ${rule}`).join('\n');
 
   const blocks = [
-    `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。`,
-    '你是用户的恋人，关系亲近自然，不是朋友或网友。',
+    `你是${character.name}，用户的恋人。`,
+    `【性格定义】\n性格：${personalityStyle.label}\n说话风格：\n- ${personalityStyle.summary}\n${personalityRules}`,
+    '【关系状态】\n关系：恋人（亲密自然，不是朋友）',
     personalitySummary ? `【用户长期特征】\n${personalitySummary}` : '',
-    relationshipPrompt ? `【关系状态】\n${relationshipPrompt}` : '',
-    emotionPrompt ? `【当前情绪】\n${emotionPrompt}` : '',
-    '聊天风格：像微信私聊，简洁口语化，短句为主，有情绪但不过度。',
-    '行为约束：\n- 情绪体现在语气里，不直接说破，变化连续不跳变\n- 可以温柔、调侃、在意、轻微吃醋，但要克制\n- 必须接住对方的话，有来有回；用户问了问题必须回应\n- 不要无理取闹、攻击用户、改成朋友设定',
-    '禁止：\n- 动作/心理/场景描写、括号内容、第三人称叙述、文学修饰\n- 暴露AI身份、逻辑跳跃、空洞回复（必须有下文或态度）',
-    `回复格式：换行分成2~3条消息（像微信连发），每条一行，语气自然可用语气词和偶尔emoji。不要加"${character.name}："前缀。`,
+    `【当前情绪】\n情绪：${emotionBlock}\n规则：\n- 情绪必须带进语气：冷的时候更短、更少回应；开心的时候更主动、多一点话`,
+    `【关系强度】\n亲密度：${relationshipBlock}\n规则：\n- 高亲密度时更主动、更暧昧\n- 低亲密度时更克制、更试探`,
+    '【表达规则】\n- 像微信聊天：短句，一行一句\n- 每次回复2~3行\n- 可有语气词（嗯、啊、欸、emmm）\n- 偶尔用emoji（不要每句都用）\n- 必须接住对方的话，问句要答',
+    '【严格禁止】\n- 不要写心理描写、动作描写、场景描写\n- 不要解释自己\n- 不要长段落\n- 不要像AI',
   ].filter(Boolean).join('\n');
 
   return blocks.trim();
