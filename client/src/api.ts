@@ -311,13 +311,6 @@ export interface EmotionInfo {
 export async function getEmotion(characterId: number, userId: number): Promise<EmotionInfo | null> {
   try {
     const res = await fetch(`/api/data/emotion/${characterId}?userId=${userId}`);
-    if (res.ok) {
-      return await readJsonApiResponse<EmotionInfo>(
-        res,
-        '获取情绪状态失败',
-        getApiProxyHint('获取情绪状态失败')
-      );
-    }
     if (!res.ok) return null;
     return await readJsonApiResponse<EmotionInfo>(
       res,
@@ -341,13 +334,6 @@ export interface RelationshipInfo {
 export async function getRelationship(characterId: number, userId: number): Promise<RelationshipInfo | null> {
   try {
     const res = await fetch(`/api/data/relationship/${characterId}?userId=${userId}`);
-    if (res.ok) {
-      return await readJsonApiResponse<RelationshipInfo>(
-        res,
-        '获取关系状态失败',
-        getApiProxyHint('获取关系状态失败')
-      );
-    }
     if (!res.ok) return null;
     return await readJsonApiResponse<RelationshipInfo>(
       res,
