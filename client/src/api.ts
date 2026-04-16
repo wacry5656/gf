@@ -247,7 +247,7 @@ export async function createCharacter(userId: number, char: Character): Promise<
     getApiProxyHint('创建角色失败')
   );
   if (!res.ok) throw new Error(data?.error || '创建角色失败');
-  if (!data?.characterId) throw new Error('创建角色失败');
+  if (!data?.characterId) throw new Error('创建角色失败：未返回角色ID');
   return data.characterId;
 }
 
@@ -401,8 +401,9 @@ export async function sendMessageStream(
   let partialWarning: unknown = null;
 
   const getRecoveredReplies = (): string[] => {
-    if (replies.length > 0) return replies;
+    if (receivedDone && replies.length > 0) return replies;
     if (accumulatedText.length > 0) return [accumulatedText];
+    if (replies.length > 0) return replies;
     return [];
   };
 
