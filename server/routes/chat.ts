@@ -615,7 +615,7 @@ interface PersonalityStyleProfile {
 }
 
 function resolvePersonalityStyle(personality: string, description: string): PersonalityStyleProfile {
-  const text = `${personality || ''} ${description || ''}`.trim();
+  const text = [personality, description].filter(Boolean).join(' ');
   const defaultProfile: PersonalityStyleProfile = {
     label: '自然型',
     summary: '亲密自然，口语化，会接话，但不过分黏',
@@ -674,11 +674,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
     }
   }
 
-  if (bestScore > 0) {
-    return bestProfile;
-  }
-
-  return defaultProfile;
+  return bestScore > 0 ? bestProfile : defaultProfile;
 }
 
 /**
