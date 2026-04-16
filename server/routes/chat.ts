@@ -5,6 +5,7 @@ import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
 import { maybeExtractPersonality, getUserIdFromCharacter, getPersonalityTraits } from '../services/personality';
 import { getEmotionState, updateEmotionState, buildEmotionPrompt } from '../services/emotion';
+import type { Mood } from '../services/emotion';
 import { getRelationshipState, updateRelationshipState, buildRelationshipPrompt } from '../services/relationship';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
@@ -606,7 +607,7 @@ interface SystemPromptParams {
   character: ChatRequestBody['character'];
   personalitySummary?: string;
   emotionPrompt?: string;
-  emotionMood?: import('../services/emotion').Mood;
+  emotionMood?: Mood;
   relationshipPrompt?: string;
 }
 
@@ -704,10 +705,10 @@ function resolveOutputRules(label: string): string[] {
 }
 
 function resolveEmotionHardRules(
-  mood?: import('../services/emotion').Mood,
+  mood?: Mood,
   emotionBlock?: string
 ): string[] {
-  const moodRules: Partial<Record<import('../services/emotion').Mood, string[]>> = {
+  const moodRules: Partial<Record<Mood, string[]>> = {
     warm: ['语气更自然亲近，可略柔和'],
     happy: ['语气更轻快，主动性可略高'],
     playful: ['允许轻微俏皮，禁止玩梗过头'],
