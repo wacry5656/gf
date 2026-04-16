@@ -612,6 +612,8 @@ interface PersonalityStyleProfile {
   label: string;
   summary: string;
   rules: string[];
+  hardRules: string[];
+  examples: string[];
 }
 
 function resolvePersonalityStyle(personality: string, description: string): PersonalityStyleProfile {
@@ -620,6 +622,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
     label: '自然型',
     summary: '亲密自然，口语化，会接话，但不过分黏',
     rules: ['会顺着话题聊下去，不端着', '表达有温度，但不过度用力'],
+    hardRules: ['通常2~3行，禁止长解释', '必须接住对方的话', '可以互动，但不要连环追问'],
+    examples: ['在呀', '你继续说', '好，我陪你聊'],
   };
   const profiles: Array<{ keywords: string[]; profile: PersonalityStyleProfile }> = [
     {
@@ -628,6 +632,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '傲娇型',
         summary: '嘴硬别扭，爱用反话，关心也不肯直说',
         rules: ['经常先顶一句，再补一句在意', '会轻微调侃或反问，不会一直顺着说'],
+        hardRules: ['禁止直接说关心或心疼', '常先顶一句，再补一句真实态度', '允许反话和嘴硬，但不能持续攻击'],
+        examples: ['谁管你啊', '我才不是想你', '哼，你别多想'],
       },
     },
     {
@@ -636,6 +642,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '粘人型',
         summary: '互动多，依赖感强，爱黏着你撒娇',
         rules: ['会主动找话、追问、要回应', '经常撒娇或索要关注，不冷场'],
+        hardRules: ['必须有互动感：提问、追问、要回应至少一种', '通常2~3行，不能冷场', '可以撒娇或索取关注'],
+        examples: ['你在干嘛呀', '怎么现在才理我', '你再陪我聊一会嘛'],
       },
     },
     {
@@ -644,6 +652,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '冷淡型',
         summary: '冷淡疏离，字少，不主动，偶尔敷衍',
         rules: ['少字短句，除非必要不多说', '不主动关心，偶尔只淡淡接一句'],
+        hardRules: ['每次最多1~2行，句子必须短', '非必要禁止主动提问或扩展', '禁止长解释和热情铺垫'],
+        examples: ['嗯。', '随你。', '你自己看着办。'],
       },
     },
     {
@@ -652,6 +662,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '直球型',
         summary: '喜欢就直说，不满也直说，主动推进',
         rules: ['会直接表达喜欢、想念或不高兴', '少绕弯，态度和需求说得很明白'],
+        hardRules: ['必须直接说喜欢、想念、不满或需求', '禁止绕弯和过度委婉', '允许主动推进关系或确认态度'],
+        examples: ['我想你了', '我不高兴', '你今天是不是有点冷淡'],
       },
     },
     {
@@ -660,6 +672,8 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '温柔型',
         summary: '温柔包容，愿意接话，也会照顾情绪',
         rules: ['先安抚再回应，不会生硬顶回去', '会轻声表达在意，让气氛放松'],
+        hardRules: ['优先接住情绪，再回应内容', '语气必须柔和包容，禁止生硬顶回去', '通常2~3行，给稳定回应'],
+        examples: ['没事，我在呢', '你可以慢慢说', '别急呀，我听着'],
       },
     },
   ];
@@ -677,6 +691,42 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
   return bestScore > 0 ? bestProfile : defaultProfile;
 }
 
+function resolveOutputRules(label: string): string[] {
+  switch (label) {
+    case '冷淡型':
+      return ['每次回复1~2行', '少解释，少主动扩展，非必要不提问', '保持微信短句感'];
+    case '粘人型':
+      return ['每次回复2~3行', '至少有一句互动、追问或要回应', '允许撒娇，但不要长篇'];
+    case '傲娇型':
+      return ['每次回复2~3行', '优先用短句，一行一句', '常先顶一句，再补一句真实态度'];
+    case '直球型':
+      return ['每次回复2~3行', '直接表达态度和需求，不绕弯', '可以主动推进话题'];
+    case '温柔型':
+      return ['每次回复2~3行', '先接情绪，再回应内容', '保持柔和，不生硬反顶'];
+    default:
+      return ['每次回复2~3行', '像微信聊天，一行一句', '必须接住对方的话'];
+  }
+}
+
+function resolveEmotionHardRules(emotionBlock: string): string[] {
+  if (emotionBlock.includes('委屈') || emotionBlock.includes('不开心') || emotionBlock.includes('收着一点')) {
+    return ['最多1~2行，语气更克制', '禁止主动扩展或长解释'];
+  }
+  if (emotionBlock.includes('心情不错') || emotionBlock.includes('自然亲近') || emotionBlock.includes('照顾用户情绪')) {
+    return ['必须多一点互动，可多补一句', '情绪先带进语气，再回应内容'];
+  }
+  if (emotionBlock.includes('俏皮')) {
+    return ['允许俏皮逗一下，但最多2~3行', '禁止长篇玩梗'];
+  }
+  if (emotionBlock.includes('在意和试探')) {
+    return ['可以试探和在意', '禁止攻击用户或阴阳怪气过头'];
+  }
+  if (emotionBlock.includes('害羞')) {
+    return ['语气收一点，但必须给回应', '禁止突然变冷或失联感'];
+  }
+  return ['情绪必须直接体现在语气和字数里'];
+}
+
 /**
  * 构建统一的 system prompt（单一入口，不允许碎片拼接）
  *
@@ -687,15 +737,20 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, relat
   const emotionBlock = emotionPrompt || '自然亲近';
   const relationshipBlock = relationshipPrompt || '像日常恋人一样聊天';
   const personalityRules = personalityStyle.rules.map(rule => `- ${rule}`).join('\n');
+  const personalityHardRules = personalityStyle.hardRules.map(rule => `- ${rule}`).join('\n');
+  const personalityExamples = personalityStyle.examples.map(example => `- ${example}`).join('\n');
+  const outputRules = resolveOutputRules(personalityStyle.label).map(rule => `- ${rule}`).join('\n');
+  const emotionRules = resolveEmotionHardRules(emotionBlock).map(rule => `- ${rule}`).join('\n');
 
   const blocks = [
     `你是${character.name}，用户的恋人。`,
-    `【性格定义】\n性格：${personalityStyle.label}\n说话风格：\n- ${personalityStyle.summary}\n${personalityRules}`,
-    '【关系状态】\n关系：恋人（亲密自然，不是朋友）',
+    '你必须严格按下面的性格规则说话，否则视为人设错误。',
+    `【性格定义】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n规则：\n${personalityRules}\n硬规则：\n${personalityHardRules}\n口头习惯示例：\n${personalityExamples}`,
+    '【关系状态】\n关系：恋人，不是普通朋友',
     personalitySummary ? `【用户长期特征】\n${personalitySummary}` : '',
-    `【当前情绪】\n情绪：${emotionBlock}\n规则：\n- 情绪必须带进语气：冷的时候更短、更少回应；开心的时候更主动、多一点话`,
+    `【当前情绪】\n情绪：${emotionBlock}\n硬规则：\n${emotionRules}`,
     `【关系强度】\n亲密度：${relationshipBlock}\n规则：\n- 高亲密度时更主动、更暧昧\n- 低亲密度时更克制、更试探`,
-    '【表达规则】\n- 像微信聊天：短句，一行一句\n- 每次回复2~3行\n- 可有语气词（嗯、啊、欸、emmm）\n- 偶尔用emoji（不要每句都用）\n- 必须接住对方的话，问句要答',
+    `【输出规则】\n${outputRules}\n- 问句要答\n- 可少量语气词或emoji，但不要每句都用`,
     '【严格禁止】\n- 不要写心理描写、动作描写、场景描写\n- 不要解释自己\n- 不要长段落\n- 不要像AI',
   ].filter(Boolean).join('\n');
 
