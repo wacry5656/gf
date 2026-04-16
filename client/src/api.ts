@@ -24,6 +24,32 @@ interface AuthResponsePayload {
   error?: string;
 }
 
+interface ChatResponsePayload {
+  reply?: string;
+  replies?: string[];
+  error?: string;
+}
+
+interface CharactersResponsePayload {
+  characters?: Character[];
+  error?: string;
+}
+
+interface CharacterMutationPayload {
+  characterId?: number;
+  error?: string;
+}
+
+interface MessagesResponsePayload {
+  messages?: ChatMessage[];
+  error?: string;
+}
+
+interface ApiStatusPayload {
+  success?: boolean;
+  error?: string;
+}
+
 export class StreamChatError extends Error {
   readonly stage: StreamErrorStage;
   readonly cause?: unknown;
@@ -94,6 +120,10 @@ async function readJsonApiResponse<T>(
   } catch {
     throw new Error(getResponseErrorMessageFromText(raw, fallback, contentType, { proxyHint }));
   }
+}
+
+function getApiProxyHint(action: string): string {
+  return `${action}：请求未命中后端接口，请检查 /api 代理或 Nginx 配置。`;
 }
 
 function createStreamStageError(
@@ -183,21 +213,26 @@ export async function sendMessage(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ character, messages, characterId: character.id, userId }),
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `请求失败 (${res.status})`);
-  }
-  const data = await res.json();
-  return data.replies || [data.reply];
+  const data = await readJsonApiResponse<ChatResponsePayload>(
+    res,
+    `请求失败 (${res.status})`,
+    getApiProxyHint('发送消息失败')
+  );
+  if (!res.ok) throw new Error(data?.error || `请求失败 (${res.status})`);
+  return data?.replies || (data?.reply ? [data.reply] : []);
 }
 
 // ====== 角色数据 ======
 
 export async function getCharacters(userId: number): Promise<Character[]> {
   const res = await fetch(`/api/data/characters?userId=${userId}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '获取角色失败');
-  return data.characters;
+  const data = await readJsonApiResponse<CharactersResponsePayload>(
+    res,
+    '获取角色失败',
+    getApiProxyHint('获取角色失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '获取角色失败');
+  return data?.characters || [];
 }
 
 export async function createCharacter(userId: number, char: Character): Promise<number> {
@@ -206,26 +241,37 @@ export async function createCharacter(userId: number, char: Character): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, ...char }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '创建角色失败');
+  const data = await readJsonApiResponse<CharacterMutationPayload>(
+    res,
+    '创建角色失败',
+    getApiProxyHint('创建角色失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '创建角色失败');
+  if (!data?.characterId) throw new Error('创建角色失败：响应缺少角色ID');
   return data.characterId;
 }
 
 export async function deleteCharacter(characterId: number, userId: number): Promise<void> {
   const res = await fetch(`/api/data/characters/${characterId}?userId=${userId}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || '删除角色失败');
-  }
+  const data = await readJsonApiResponse<ApiStatusPayload>(
+    res,
+    '删除角色失败',
+    getApiProxyHint('删除角色失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '删除角色失败');
 }
 
 // ====== 聊天记录 ======
 
 export async function getMessages(characterId: number, userId: number): Promise<ChatMessage[]> {
   const res = await fetch(`/api/data/messages/${characterId}?userId=${userId}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '获取消息失败');
-  return data.messages;
+  const data = await readJsonApiResponse<MessagesResponsePayload>(
+    res,
+    '获取消息失败',
+    getApiProxyHint('获取消息失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '获取消息失败');
+  return data?.messages || [];
 }
 
 export async function saveMessage(characterId: number, role: string, content: string, userId: number): Promise<void> {
@@ -234,18 +280,22 @@ export async function saveMessage(characterId: number, role: string, content: st
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ characterId, role, content, userId }),
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || '保存消息失败');
-  }
+  const data = await readJsonApiResponse<ApiStatusPayload>(
+    res,
+    '保存消息失败',
+    getApiProxyHint('保存消息失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '保存消息失败');
 }
 
 export async function clearMessages(characterId: number, userId: number): Promise<void> {
   const res = await fetch(`/api/data/messages/${characterId}?userId=${userId}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || '清空消息失败');
-  }
+  const data = await readJsonApiResponse<ApiStatusPayload>(
+    res,
+    '清空消息失败',
+    getApiProxyHint('清空消息失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '清空消息失败');
 }
 
 // ====== 情绪状态 ======
@@ -262,7 +312,11 @@ export async function getEmotion(characterId: number, userId: number): Promise<E
   try {
     const res = await fetch(`/api/data/emotion/${characterId}?userId=${userId}`);
     if (!res.ok) return null;
-    return await res.json();
+    return await readJsonApiResponse<EmotionInfo>(
+      res,
+      '获取情绪状态失败',
+      getApiProxyHint('获取情绪状态失败')
+    );
   } catch {
     return null;
   }
@@ -281,7 +335,11 @@ export async function getRelationship(characterId: number, userId: number): Prom
   try {
     const res = await fetch(`/api/data/relationship/${characterId}?userId=${userId}`);
     if (!res.ok) return null;
-    return await res.json();
+    return await readJsonApiResponse<RelationshipInfo>(
+      res,
+      '获取关系状态失败',
+      getApiProxyHint('获取关系状态失败')
+    );
   } catch {
     return null;
   }
@@ -334,11 +392,24 @@ export async function sendMessageStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let replies: string[] = [];
+  let accumulatedText = '';
   let buffer = '';
   let receivedReady = false;
   let receivedFirstDelta = false;
   let receivedDone = false;
   let streamReadError: unknown = null;
+  let partialWarning: unknown = null;
+
+  const getRecoveredReplies = (): string[] => {
+    if (receivedDone && replies.length > 0) return replies;
+    if (accumulatedText.length > 0) return [accumulatedText];
+    if (replies.length > 0) return replies;
+    return [];
+  };
+
+  const hasPartialContent = (): boolean => {
+    return receivedFirstDelta || getRecoveredReplies().length > 0;
+  };
 
   // Parse one SSE event block (blank-line delimited) so ready/delta/done
   // messages still work even when proxies coalesce or split TCP chunks.
@@ -408,11 +479,23 @@ export async function sendMessageStream(
           receivedFirstDelta = true;
           console.log(`[sendMessageStream] 收到第一个 delta, characterId=${character.id}`);
         }
+        accumulatedText += parsed.delta;
         onDelta(parsed.delta);
       }
       if (parsed.replies) replies = parsed.replies;
       if (parsed.error) {
-        throw getInterruptedStreamError(receivedReady, receivedFirstDelta, replies, parsed.error);
+        const streamError = getInterruptedStreamError(
+          receivedReady,
+          receivedFirstDelta,
+          getRecoveredReplies(),
+          parsed.error
+        );
+        if (hasPartialContent()) {
+          partialWarning = streamError;
+          console.warn('[sendMessageStream] 收到流式错误事件，但已保留部分内容', streamError);
+          return;
+        }
+        throw streamError;
       }
     } catch (e: any) {
       if (e instanceof SyntaxError) return;
@@ -454,13 +537,30 @@ export async function sendMessageStream(
   }
 
   if (streamReadError instanceof StreamChatError) {
-    throw streamReadError;
+    if (hasPartialContent()) {
+      partialWarning = streamReadError;
+    } else {
+      throw streamReadError;
+    }
   }
 
+  const recoveredReplies = getRecoveredReplies();
+
   if (streamReadError || !receivedDone) {
-    throw getInterruptedStreamError(receivedReady, receivedFirstDelta, replies, streamReadError);
+    if (hasPartialContent()) {
+      partialWarning = partialWarning || streamReadError || new Error('流式响应在 done 前结束');
+      console.warn('[sendMessageStream] 流提前结束，但已返回部分内容', partialWarning);
+      console.log(`[sendMessageStream] 流结束(部分成功): characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);
+      return recoveredReplies;
+    }
+
+    throw getInterruptedStreamError(receivedReady, receivedFirstDelta, recoveredReplies, streamReadError);
+  }
+
+  if (partialWarning) {
+    console.warn('[sendMessageStream] 流式响应包含可恢复异常，已返回现有内容', partialWarning);
   }
 
   console.log(`[sendMessageStream] 流结束: characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);
-  return replies;
+  return recoveredReplies;
 }
