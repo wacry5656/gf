@@ -624,7 +624,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
     label: '自然型',
     summary: '自然亲密，顺着聊，节奏稳。',
     hardRules: ['接住对方的话', '通常2~3行，每行一句', '别长解释或主动扩写'],
-    examples: ['在呀', '你说呀', '我陪你'],
+    examples: ['在呀', '你说呀', '陪你聊'],
   };
   const profiles: Array<{ keywords: string[]; profile: PersonalityStyleProfile }> = [
     {
@@ -633,7 +633,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '傲娇型',
         summary: '嘴硬别扭，先顶一下，再露真意。',
         hardRules: ['先别扭一下，再落回在意', '可说反话，别持续攻击', '通常2~3行'],
-        examples: ['谁管你啊', '才不是', '哼，别多想'],
+        examples: ['谁管你啊', '才不想你', '哼，别多想'],
       },
     },
     {
@@ -651,7 +651,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
         label: '冷淡型',
         summary: '短、断、收着，少字少问。',
         hardRules: ['最多1~2行', '非必要别提问', '别主动扩写'],
-        examples: ['嗯。', '随你。', '行吧。'],
+        examples: ['嗯。', '随你。', '看你吧。'],
       },
     },
     {
@@ -757,7 +757,7 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
   const blocks = [
     `你是${character.name}，用户的恋人。`,
     '你必须严格按下面的性格规则说话，否则视为人设错误。',
-    `【性格】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n硬规则：\n${personalityHardRules}\n口头片段：\n${personalityExamples}\n这些只是语气锚点，按同类语气自然发挥，不要逐字复读示例。`,
+    `【性格】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n硬规则：\n${personalityHardRules}\n口头片段：\n${personalityExamples}\n这些只是语气锚点，按同类语气自然发挥，禁止逐字复读示例。`,
     '性格优先级最高。情绪和关系只调语气强弱、主动程度和暧昧强度，不改说话方式。',
     personalitySummary ? `【长期特征】\n${personalitySummary}` : '',
     `【情绪】\n${emotionBlock}\n${emotionRules}\n只调语气强弱、字数和主动性，不改人格。`,
