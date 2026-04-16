@@ -247,7 +247,7 @@ export async function createCharacter(userId: number, char: Character): Promise<
     getApiProxyHint('创建角色失败')
   );
   if (!res.ok) throw new Error(data?.error || '创建角色失败');
-  if (!data?.characterId) throw new Error('创建角色失败：未返回角色ID');
+  if (!data?.characterId) throw new Error('创建角色失败：响应缺少角色ID');
   return data.characterId;
 }
 
