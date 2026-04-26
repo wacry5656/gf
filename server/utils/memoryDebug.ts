@@ -12,6 +12,7 @@ export interface MemoryDebugEntry {
   relationshipSubtype: string | null;
   invalidationReason: string | null;
   semanticScore: number;
+  keywordScore?: number;
   importanceScore: number;
   recencyScore: number;
   usageScore: number;
@@ -44,7 +45,8 @@ function formatEntry(e: MemoryDebugEntry): string {
   const preview = e.text.length > 40 ? e.text.slice(0, 40) + '...' : e.text;
   const subtype = e.relationshipSubtype ? ` sub=${e.relationshipSubtype}` : '';
   const invalidation = e.invalidationReason ? ` inv=${e.invalidationReason}` : '';
-  return `  [#${e.id}|${e.memoryType}${subtype}${invalidation}] sem=${e.semanticScore.toFixed(3)} imp=${e.importanceScore.toFixed(2)} rec=${e.recencyScore.toFixed(2)} use=${e.usageScore.toFixed(2)} len=${e.lengthPenalty} hits=${e.hitCount} → final=${e.finalScore.toFixed(4)} | "${preview}"`;
+  const keyword = e.keywordScore !== undefined ? ` key=${e.keywordScore.toFixed(2)}` : '';
+  return `  [#${e.id}|${e.memoryType}${subtype}${invalidation}] sem=${e.semanticScore.toFixed(3)}${keyword} imp=${e.importanceScore.toFixed(2)} rec=${e.recencyScore.toFixed(2)} use=${e.usageScore.toFixed(2)} len=${e.lengthPenalty} hits=${e.hitCount} → final=${e.finalScore.toFixed(4)} | "${preview}"`;
 }
 
 export function logMemoryDebug(ctx: MemoryDebugContext): void {

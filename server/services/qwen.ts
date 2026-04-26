@@ -7,6 +7,9 @@ export async function callQwenAPI(messages: ChatMessage[]): Promise<string> {
   const apiKey = process.env.QWEN_API_KEY;
   const apiUrl = process.env.QWEN_API_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
   const model = process.env.QWEN_MODEL || 'qwen-turbo';
+  const temperature = Number(process.env.QWEN_TEMPERATURE || 0.82);
+  const topP = Number(process.env.QWEN_TOP_P || 0.88);
+  const maxTokens = Number(process.env.QWEN_MAX_TOKENS || 520);
 
   if (!apiKey || apiKey === 'your_api_key_here') {
     throw new Error('请在 .env 文件中配置 QWEN_API_KEY');
@@ -21,9 +24,9 @@ export async function callQwenAPI(messages: ChatMessage[]): Promise<string> {
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0.85,
-      top_p: 0.9,
-      max_tokens: 1024,
+      temperature,
+      top_p: topP,
+      max_tokens: maxTokens,
     }),
   });
 

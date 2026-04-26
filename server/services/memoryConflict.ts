@@ -128,8 +128,9 @@ export function detectMemoryConflict(
     const existingEmb = JSON.parse(row.embedding) as number[];
     const similarity = cosineSimilarity(newEmbedding, existingEmb);
 
-    // 语义接近但不完全重复 → 可能是冲突
-    if (similarity > threshold && similarity < memoryConfig.writeDedupThreshold) {
+    // 语义接近且同一维度但文本不同 → 可能是更新/冲突。
+    // 不再用 writeDedupThreshold 做上限，否则偏好反转、地点变更容易被挡在冲突检测外。
+    if (similarity > threshold && existingText !== checkText) {
       // 同维度检测
       const existingDimension = detectDimension(existingText);
       if (newDimension && existingDimension && newDimension === existingDimension) {
@@ -182,6 +183,10 @@ export function resolveMemoryConflict(
  * 检测文本所属的语义维度
  */
 function detectDimension(text: string): string | null {
+  if (/(用户(喜欢|不喜欢|讨厌|最怕|受不了|不爱|爱|最爱)|我(喜欢|不喜欢|讨厌|最怕|受不了|不爱|爱|最爱))/.test(text)) {
+    return 'preference';
+  }
+
   for (const { dimension, patterns } of CONFLICT_DIMENSION_PATTERNS) {
     for (const pattern of patterns) {
       if (pattern.test(text)) {

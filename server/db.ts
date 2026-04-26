@@ -53,6 +53,7 @@ db.exec(`
     embedding TEXT NOT NULL,
     importance INTEGER DEFAULT 1,
     memory_type TEXT DEFAULT 'other',
+    keywords TEXT DEFAULT '[]',
     is_active INTEGER DEFAULT 1,
     superseded_by INTEGER,
     hit_count INTEGER DEFAULT 0,
@@ -74,6 +75,30 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (character_id) REFERENCES characters(id)
   );
+
+  CREATE TABLE IF NOT EXISTS character_states (
+    character_id INTEGER PRIMARY KEY,
+    affection INTEGER DEFAULT 72,
+    trust INTEGER DEFAULT 62,
+    tension INTEGER DEFAULT 4,
+    attachment INTEGER DEFAULT 64,
+    mood TEXT DEFAULT 'warm',
+    last_user_tone TEXT DEFAULT 'neutral',
+    last_event TEXT,
+    updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS embedding_cache (
+    cache_key TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    text_preview TEXT,
+    embedding TEXT NOT NULL,
+    hit_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_hit_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ========== 兼容性迁移 ==========
@@ -84,6 +109,7 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memory_summaries ADD COLUMN memory_count_at_update INTEGER DEFAULT 0' },
   // v4 migrations
   { sql: "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'other'" },
+  { sql: "ALTER TABLE memories ADD COLUMN keywords TEXT DEFAULT '[]'" },
   { sql: 'ALTER TABLE memories ADD COLUMN is_active INTEGER DEFAULT 1' },
   { sql: 'ALTER TABLE memories ADD COLUMN superseded_by INTEGER' },
   { sql: 'ALTER TABLE memories ADD COLUMN hit_count INTEGER DEFAULT 0' },
@@ -92,6 +118,14 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memories ADD COLUMN expires_at TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN relationship_subtype TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN invalidation_reason TEXT' },
+  { sql: 'ALTER TABLE character_states ADD COLUMN affection INTEGER DEFAULT 72' },
+  { sql: 'ALTER TABLE character_states ADD COLUMN trust INTEGER DEFAULT 62' },
+  { sql: 'ALTER TABLE character_states ADD COLUMN tension INTEGER DEFAULT 4' },
+  { sql: 'ALTER TABLE character_states ADD COLUMN attachment INTEGER DEFAULT 64' },
+  { sql: "ALTER TABLE character_states ADD COLUMN mood TEXT DEFAULT 'warm'" },
+  { sql: "ALTER TABLE character_states ADD COLUMN last_user_tone TEXT DEFAULT 'neutral'" },
+  { sql: 'ALTER TABLE character_states ADD COLUMN last_event TEXT' },
+  { sql: "ALTER TABLE character_states ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))" },
 ];
 
 for (const m of migrations) {

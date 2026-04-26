@@ -16,6 +16,25 @@ export interface User {
   username: string;
 }
 
+export interface RelationshipState {
+  characterId: number;
+  affection: number;
+  trust: number;
+  tension: number;
+  attachment: number;
+  mood: string;
+  lastUserTone: string;
+  lastEvent: string | null;
+}
+
+export interface CharacterInsights {
+  summary: string | null;
+  memoryCount: number;
+  activePlans: string[];
+  recentStates: string[];
+  coreMemories: string[];
+}
+
 // ====== 认证 ======
 
 export async function register(username: string, password: string): Promise<User> {
@@ -85,6 +104,20 @@ export async function deleteCharacter(characterId: number): Promise<void> {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || '删除角色失败');
   }
+}
+
+export async function getCharacterState(characterId: number): Promise<RelationshipState> {
+  const res = await fetch(`/api/data/characters/${characterId}/state`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '获取角色状态失败');
+  return data.state;
+}
+
+export async function getCharacterInsights(characterId: number): Promise<CharacterInsights> {
+  const res = await fetch(`/api/data/characters/${characterId}/insights`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '获取角色记忆失败');
+  return data.insights;
 }
 
 // ====== 聊天记录 ======

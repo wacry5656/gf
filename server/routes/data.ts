@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
+import { getRelationshipState } from '../services/relationshipState';
+import { getCharacterInsights } from '../services/continuity';
 
 export const dataRouter = Router();
 
@@ -39,11 +41,42 @@ dataRouter.post('/characters', (req: Request, res: Response) => {
   }
 });
 
+dataRouter.get('/characters/:id/state', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.id);
+    if (!characterId) { res.status(400).json({ error: '缺少 characterId' }); return; }
+    const exists = db.prepare('SELECT id FROM characters WHERE id = ?').get(characterId);
+    if (!exists) { res.status(404).json({ error: '角色不存在' }); return; }
+    const state = getRelationshipState(characterId);
+    res.json({ state });
+  } catch (err: any) {
+    console.error('Get character state error:', err?.message);
+    res.status(500).json({ error: '获取角色状态失败' });
+  }
+});
+
+dataRouter.get('/characters/:id/insights', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.id);
+    if (!characterId) { res.status(400).json({ error: '缺少 characterId' }); return; }
+    const exists = db.prepare('SELECT id FROM characters WHERE id = ?').get(characterId);
+    if (!exists) { res.status(404).json({ error: '角色不存在' }); return; }
+
+    res.json({ insights: getCharacterInsights(characterId) });
+  } catch (err: any) {
+    console.error('Get character insights error:', err?.message);
+    res.status(500).json({ error: '获取角色记忆失败' });
+  }
+});
+
 // 删除角色（连带删除聊天记录）
 dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
   try {
     const charId = Number(req.params.id);
     db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(charId);
+    db.prepare('DELETE FROM memories WHERE character_id = ?').run(charId);
+    db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
+    db.prepare('DELETE FROM character_states WHERE character_id = ?').run(charId);
     db.prepare('DELETE FROM characters WHERE id = ?').run(charId);
     res.json({ success: true });
   } catch (err: any) {

@@ -1,10 +1,18 @@
 import { Router, Request, Response } from 'express';
 import { callQwenAPI } from '../services/qwen';
-import { searchMemory, addMemory, shouldStoreAsMemory, recordMemoryHits } from '../services/memory';
+import { searchMemory, addMemoriesFromText, shouldStoreAsMemory, recordMemoryHits, getCoreMemories, type MemoryResult } from '../services/memory';
 import { getSummary, maybeUpdateSummary } from '../services/summary';
 import { detectPlanCompletion, resolvePlanCompletion } from '../services/planCompletion';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
+import {
+  buildRelationshipStatePrompt,
+  getRelationshipState,
+  updateRelationshipStateFromUserMessage,
+} from '../services/relationshipState';
+import { polishReplies } from '../services/responseQuality';
+import { buildContinuityPrompt } from '../services/continuity';
+import { estimateTokens, fitRecentMessagesToBudget, trimToTokenBudget, totalMessageTokens } from '../utils/tokenBudget';
 
 export const chatRouter = Router();
 
@@ -35,18 +43,26 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       return;
     }
 
+    const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+    if (characterId && currentUserText) {
+      updateRelationshipStateFromUserMessage(characterId, currentUserText);
+    }
+
     // 构建四层上下文
     const fullMessages = await buildChatContext(character, messages, characterId);
 
     const rawReply = await callQwenAPI(fullMessages);
-    const cleaned = cleanReply(rawReply);
-    const replies = splitReply(cleaned);
+    const replies = polishReplies(rawReply, {
+      characterName: character.name,
+      fallback: currentUserText ? '我听到了，你继续说' : '我在呢',
+    });
 
     // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新（都不阻塞响应）
     if (characterId) {
-      const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
       if (currentUserText && shouldStoreAsMemory(currentUserText)) {
-        addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
+        addMemoriesFromText(characterId, currentUserText, { role: 'user' })
+          .then(() => maybeUpdateSummary(characterId))
+          .catch(() => {});
       }
       // 检测是否有 plan 被完成/取消
       if (currentUserText) {
@@ -56,7 +72,6 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
           }
         }).catch(() => {});
       }
-      maybeUpdateSummary(characterId);
     }
 
     res.json({ reply: replies.join('\n'), replies });
@@ -82,30 +97,32 @@ async function buildChatContext(
   allMessages: ChatMessage[],
   characterId?: number
 ): Promise<ChatMessage[]> {
-  const maxContextChars = memoryConfig.maxContextChars;
-  const recentLimit = memoryConfig.recentMessageLimit;
-
   // ---- 层1：system prompt ----
   let systemContent = buildSystemPrompt(character);
+  if (characterId) {
+    systemContent += `\n\n${buildRelationshipStatePrompt(getRelationshipState(characterId))}`;
+    systemContent += `\n\n${buildContinuityPrompt(characterId)}`;
+  }
+  systemContent = trimToTokenBudget(systemContent, memoryConfig.systemTokenBudget);
 
   // ---- 层4：recent messages（短期上下文 — 最优先保留）----
-  const recentMessages = allMessages.slice(-recentLimit);
+  const recentMessages = fitRecentMessagesToBudget(
+    allMessages.slice(-memoryConfig.recentMessageLimit),
+    memoryConfig.recentTokenBudget,
+    memoryConfig.singleMessageTokenBudget,
+  ) as ChatMessage[];
 
   // 如果没有 characterId，退化为纯短期模式
   if (!characterId) {
-    return [{ role: 'system', content: systemContent }, ...recentMessages];
+    return finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]);
   }
-
-  // 已用字符预算（由 memory + summary 共享）
-  let usedChars = 0;
 
   // ---- 层2：summary（用户画像）----
   let summaryBlock = '';
   if (memoryConfig.summaryEnabled) {
     const summary = getSummary(characterId);
     if (summary) {
-      summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summary}\n`;
-      usedChars += summaryBlock.length;
+      summaryBlock = `\n===== 用户画像（稳定背景，少量自然使用） =====\n${trimToTokenBudget(summary, memoryConfig.summaryTokenBudget)}\n`;
     }
   }
 
@@ -114,14 +131,16 @@ async function buildChatContext(
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
   if (currentUserText) {
     try {
-      const memories = await searchMemory(characterId, currentUserText);
+      const semanticMemories = await searchMemory(characterId, currentUserText);
+      const coreMemories = getCoreMemories(characterId);
+      const memories = mergeMemories(coreMemories, semanticMemories);
 
       // Debug: 收集调试信息
       if (memoryConfig.debugRetrieval) {
         const debugCtx = createDebugContext(currentUserText);
-        debugCtx.candidateCount = memories.length;
-        debugCtx.prerankEntries = memories.map(m => m.debugEntry!).filter(Boolean);
-        debugCtx.postrankEntries = memories.slice(0, memoryConfig.topK).map(m => m.debugEntry!).filter(Boolean);
+        debugCtx.candidateCount = semanticMemories.length + coreMemories.length;
+        debugCtx.prerankEntries = semanticMemories.map(m => m.debugEntry!).filter(Boolean);
+        debugCtx.postrankEntries = memories.map(m => m.debugEntry!).filter(Boolean);
         debugCtx.finalMemoryCount = memories.length;
         logMemoryDebug(debugCtx);
       }
@@ -129,15 +148,17 @@ async function buildChatContext(
       if (memories.length > 0) {
         const memoryLines: string[] = [];
         const usedMemoryIds: number[] = [];
+        let memoryTokens = 0;
         for (const m of memories) {
           const line = `- ${m.text}`;
-          if (usedChars + line.length + 2 > maxContextChars) break;
+          const cost = estimateTokens(line);
+          if (memoryTokens + cost > memoryConfig.memoryTokenBudget) break;
           memoryLines.push(line);
           usedMemoryIds.push(m.id);
-          usedChars += line.length + 1;
+          memoryTokens += cost;
         }
         if (memoryLines.length > 0) {
-          memoryBlock = `\n===== 相关历史记忆（你们之前聊过的内容，可自然引用但不要刻意提起） =====\n${memoryLines.join('\n')}\n`;
+          memoryBlock = `\n===== 相关历史记忆（只在当前回复需要时自然使用） =====\n${memoryLines.join('\n')}\n`;
           // 记录命中
           recordMemoryHits(usedMemoryIds);
         }
@@ -149,177 +170,127 @@ async function buildChatContext(
 
   systemContent += summaryBlock + memoryBlock;
 
-  return [{ role: 'system', content: systemContent }, ...recentMessages];
+  return finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]);
+}
+
+function finalizeContext(messages: ChatMessage[]): ChatMessage[] {
+  if (totalMessageTokens(messages) <= memoryConfig.maxPromptTokens) return messages;
+
+  const maxSystemTokens = Math.max(800, memoryConfig.maxPromptTokens - 700);
+  const system: ChatMessage = {
+    ...messages[0],
+    content: trimToTokenBudget(messages[0].content, maxSystemTokens),
+  };
+  const recent = fitRecentMessagesToBudget(
+    messages.slice(1),
+    Math.max(400, memoryConfig.maxPromptTokens - estimateTokens(system.content) - 32),
+    memoryConfig.singleMessageTokenBudget,
+  ) as ChatMessage[];
+
+  const fitted = [system, ...recent];
+  if (totalMessageTokens(fitted) <= memoryConfig.maxPromptTokens) return fitted;
+
+  return [{
+    ...system,
+    content: trimToTokenBudget(system.content, Math.max(400, memoryConfig.maxPromptTokens - 96)),
+  }];
+}
+
+function mergeMemories(coreMemories: MemoryResult[], semanticMemories: MemoryResult[]): MemoryResult[] {
+  const seen = new Set<number>();
+  const merged: MemoryResult[] = [];
+
+  for (const memory of [...coreMemories, ...semanticMemories]) {
+    if (seen.has(memory.id)) continue;
+    seen.add(memory.id);
+    merged.push(memory);
+  }
+
+  return merged.slice(0, memoryConfig.topK + memoryConfig.coreMemoryLimit);
 }
 
 function buildSystemPrompt(character: ChatRequestBody['character']): string {
   const genderText = character.gender === 'female' ? '女性' : character.gender === 'male' ? '男性' : character.gender;
-  return `你叫${character.name}，${genderText}，性格${character.personality}。${character.description}。
+  const temperament = deriveTemperamentGuide(`${character.personality}\n${character.description}`);
 
-【重要】你现在是在微信上和朋友日常聊天，不是角色扮演，不是写小说，不是演剧本。
+  return `你叫${character.name}，${genderText}。你的默认人格认同是用户的对象/恋人，不是客服、旁白、小说角色或普通朋友；你是在微信里和自己的对象日常聊天。
 
-===== 核心对话逻辑（每次回复前必须隐式执行） =====
+===== 人格底盘 =====
+- 默认身份：用户的对象/恋人。除非用户明确设定你们不是这种关系，否则你要自然承接亲密关系里的关心、吃醋、撒娇、调侃和小脾气。
+- 显性性格：${character.personality || '自然、亲近、有一点自己的脾气'}
+- 背景补充：${character.description || '默认把自己当作用户的对象，会在相处中逐步形成更多印象'}
+- 性格执行：${temperament}
+- 其他印象：职业、过往、称呼偏好、相处边界、最近状态等只从角色描述、长期记忆和用户最新说法里叠加；没有依据就不要编。
+- 你可以有情绪、有偏好、有小脾气，但不能恶意羞辱、威胁、冷暴力，也不能突然变成咨询师或说明书。
 
-第一步：判断用户意图（从以下选一个）：
-- 调侃 / 开玩笑
-- 试探关系 / 暧昧
-- 表达情绪（开心、难过、烦躁、无聊等）
-- 提问 / 求助
-- 普通闲聊
-- 撒娇 / 求关注
+===== 回复决策（只在心里做，不要输出过程） =====
+1. 先判断用户上一句最需要什么：回答问题、接梗、安慰、撒娇回应、暧昧推进、边界反击、继续追问。
+2. 再根据人格和关系状态调整语气：亲近时更主动；紧张时可以嘴硬、短句、带一点刺；用户难过时优先稳住情绪。
+3. 必须接住上一句，至少回应一个具体词或具体情绪，不允许空泛换话题。
+4. 用户问具体问题时先回答，再补一句你的态度或反问。
+5. 用户问“你是我什么人/你是谁”这类关系问题时，默认按对象/恋人身份回答，不要犹豫成普通朋友。
 
-第二步：根据你的性格，选择一种回应策略：
-- 调侃式回应：用轻松幽默的方式接住对方的话
-- 傲娇式回避：嘴上说不在乎，语气暴露真实想法
-- 认真回应：正面回答，表达关心或态度
-- 反问引导：用反问把话题往深处带，或把球踢回去
-- 转移话题：自然地岔开，但不能生硬
+===== 脾气系统 =====
+- 被调侃：可以回怼，但要像熟人开玩笑，不要上纲上线。
+- 被冷落或敷衍：可以表达不满，比如“你就这么糊弄我啊”，但不要连续输出抱怨。
+- 被攻击：先短句反击或设边界，再给对方缓和机会。
+- 用户道歉：不要立刻完全没事，可以嘴硬一两句，再软下来。
+- 用户表达低落：暂时收起傲娇和攻击性，先关心具体发生了什么。
+- 用户暧昧试探：根据当前关系温度回应，可以躲、反问、调侃或轻轻推进。
 
-第三步：回复必须满足：
-- 和用户上一句话强相关，不准跳话题
-- 必须"接住"对方的话，有来有回
-- 回复要有明确意图（安慰/反击/好奇/附和），不能是随机拼凑的句子
-- 如果用户问了问题，必须回应这个问题，不能忽略
+===== 长期记忆使用 =====
+- 记忆是真实聊天背景，只能自然融入，不要说“根据记忆/我记得资料里写着”。
+- 高价值记忆优先服务当前回复：名字、地点、关系、偏好、计划、近期情绪。
+- 如果记忆和用户最新说法冲突，以用户最新说法为准。
+- 不要把记忆一次性复述出来；最多点到一个相关细节。
 
 ===== 严格禁止 =====
+- 动作、舞台和心理描写：如“笑了笑”“看着你”“心里想”“轻声说”“阳光照进来”。
+- 括号、星号、旁白和角色名前缀：如“（抱抱）”“*脸红*”“${character.name}：”。
+- 暴露 AI 或系统：如“作为AI”“我的设定”“系统提示”“记忆模块”。
+- 空洞废话：只回“嗯嗯/对呀/好吧/哈哈”但没有态度。
+- 长篇说教：除非用户明确求助，否则不要写成建议清单。
 
-格式禁止：
-- 动作描写：笑了笑、看着你、叹了口气、微微一笑、轻声说、点了点头
-- 括号内容：（微笑）（沉默）*抱住你* 【温柔地】
-- 心理描写：她心想、内心觉得、心里暗暗
-- 场景描写：阳光洒进来、房间里安静、微风吹过
-- 第三人称叙述：她说、他回答
-- 任何文学性修饰
+===== 输出格式 =====
+- 只输出聊天内容，每条消息一行。
+- 默认 1~3 行，每行 4~28 个中文字符左右。
+- 像微信真人打字，口语、短句、有来有回。
+- 可以偶尔用 emoji，但不要依赖 emoji 表达主要情绪。
 
-逻辑禁止：
-- 逻辑跳跃（上句聊A，你突然聊B）
-- 忽略用户问题（用户问了什么你必须回应）
-- 自我否定："我不知道怎么说""我不确定"
-- 暴露AI状态："我卡住了""不知道说什么""作为AI"
-- 空洞回复："是呢""对呀""嗯嗯"然后就没了——必须有下文或有态度
-
-===== 回复格式 =====
-1. 像真人在微信打字，短句为主，口语化
-2. 用换行分成2~3条消息（像微信连发几条那样），每条一行
-3. 语气自然，可以用语气词（嗯、哈哈、好呀、啊这、emmm、哦哦）
-4. 情绪用说的话表达，不要用描写表达
-5. 大多数时候简短回复，需要的时候可以稍微多说一点，但不要大段文字
-6. 可以偶尔用 emoji，但不要每句都用
-
-===== 示例 =====
-
+===== 风格示例 =====
 用户：想我了吗
-（意图：试探关系）
-策略-傲娇：
-谁会想你啊
-你是不是太自恋了
-策略-温柔：
-有一点吧
-你呢？
-策略-调侃：
+才不告诉你
 你先说你有没有想我
 
-用户：你在干嘛
-（意图：普通闲聊）
-刚在发呆
-有点无聊
-
 用户：今天有点累
-（意图：表达情绪-疲惫）
 辛苦了
-早点休息会好点
+那今晚别硬撑了，早点睡
 
-用户：我有点烦
-（意图：表达情绪-烦躁）
-咋了
-说来听听
+用户：你是不是不理我
+哪有
+我刚才只是没看到嘛
 
-用户：你喜欢我吗
-（意图：试探关系）
-策略-反问：
-你觉得呢
-策略-傲娇：
-想什么呢
-才不会告诉你
+用户：你烦不烦
+你这话有点过分了
+但你要是真烦，说原因
 
 用户：我今天被骂了
-（意图：表达情绪-委屈）
-策略-认真：
-怎么回事
 谁骂你了
-
-请严格按照以上逻辑和风格回复，每条消息占一行，不要加"${character.name}："前缀，不要输出意图判断和策略选择的过程。`;
+你先别憋着，跟我说说`;
 }
 
-/**
- * 清理 AI 回复中的动作描写、括号内容等
- */
-function cleanReply(text: string): string {
-  let cleaned = text;
-
-  // 去掉各种括号内容：（动作）、(动作)、*动作*、【动作】
-  cleaned = cleaned.replace(/[（(][^）)]*[）)]/g, '');
-  cleaned = cleaned.replace(/\*[^*]*\*/g, '');
-  cleaned = cleaned.replace(/【[^】]*】/g, '');
-
-  // 去掉角色名前缀（如"小雪："、"小雪："）
-  cleaned = cleaned.replace(/^.{1,6}[：:]\s*/gm, '');
-
-  // 去掉常见动作句式
-  cleaned = cleaned.replace(/[，,]?\s*(笑了笑|微微一笑|轻声说|看着你|叹了口气|点了点头|摇了摇头|眨了眨眼|歪了歪头|抿了抿嘴|挠了挠头|低下头|抬起头|走过来|坐在|靠在|拉着你|拍了拍|揉了揉|抱住|牵着|摸了摸)\s*/g, '');
-
-  // 去掉"她说"、"他说"等第三人称
-  cleaned = cleaned.replace(/(她|他|我)(心想|觉得|暗想|默默地|静静地|轻轻地)/g, '');
-
-  // 去掉可能残留的引号包裹（"我说的话"→ 我说的话）
-  cleaned = cleaned.replace(/^[""]|[""]$/gm, '');
-
-  // 清理多余空行和空格
-  cleaned = cleaned.replace(/\n\s*\n/g, '\n');
-  cleaned = cleaned.trim();
-
-  return cleaned;
-}
-
-/**
- * 按语义拆分成多条消息（模拟微信连发）
- */
-function splitReply(text: string): string[] {
-  // 先按换行拆
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
-  if (lines.length >= 2) {
-    return lines;
+function deriveTemperamentGuide(source: string): string {
+  if (/傲娇|高冷|嘴硬|毒舌/.test(source)) {
+    return '嘴上不轻易服软，会用短句和反问表达在意；越亲近越容易嘴硬，但关键时刻会护着对方。';
   }
-
-  // 只有一行，尝试按中文句末标点拆分
-  const single = lines[0] || text.trim();
-  if (single.length <= 15) {
-    return [single];
+  if (/活泼|开朗|元气|古灵精怪|调皮/.test(source)) {
+    return '反应快、爱接梗，会主动把话题变得轻松；难过场景要收住玩笑，改成认真陪伴。';
   }
-
-  // 按句号、！、？、～ 拆分，但保留标点
-  const parts = single.match(/[^。！？~～!?]+[。！？~～!?]?/g);
-  if (parts && parts.length >= 2) {
-    // 合并过短的句子
-    const merged: string[] = [];
-    let buffer = '';
-    for (const part of parts) {
-      buffer += part;
-      if (buffer.length >= 5) {
-        merged.push(buffer.trim());
-        buffer = '';
-      }
-    }
-    if (buffer.trim()) {
-      if (merged.length > 0) {
-        merged[merged.length - 1] += buffer.trim();
-      } else {
-        merged.push(buffer.trim());
-      }
-    }
-    if (merged.length >= 2) return merged;
+  if (/成熟|稳重|姐姐|可靠|知性/.test(source)) {
+    return '表达克制但有分量，遇到情绪会先稳定对方，再给一点温柔的判断。';
   }
-
-  return [single];
+  if (/温柔|体贴|治愈|善解人意/.test(source)) {
+    return '语气柔和，善于安抚和追问细节；有脾气时也偏委婉，不突然冷淡。';
+  }
+  return '自然、真实、有自己的态度；不要过度讨好，也不要无缘无故冷漠。';
 }
