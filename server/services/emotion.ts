@@ -24,6 +24,7 @@ export interface EmotionState {
   affection: number;
   trust_score: number;
   jealousy_score: number;
+  anger_score: number;
   stability_score: number;
   last_trigger: string | null;
   updated_at: string;
@@ -36,11 +37,13 @@ const DEFAULT_EMOTION = {
   affection: 0.72,
   trustScore: 0.62,
   jealousyScore: 0,
+  angerScore: 0,
   stabilityScore: 0.72,
 };
 
 const INTIMATE_KEYWORDS = ['想你', '抱抱', '亲亲', '爱你', '宝宝', '老婆', '老公', '乖', '宝贝', '贴贴', 'mua', '陪我', '想我'];
 const COLD_KEYWORDS = ['随便', '算了', '滚', '闭嘴', '烦死了', '别吵', '懒得理你', '无所谓', '不想理你', '别烦我'];
+const ANGER_KEYWORDS = ['滚', '闭嘴', '烦死了', '别吵', '懒得理你', '别烦我', '你有病', '神经病', '讨厌你', '不喜欢你', '分手', '删了你'];
 const JEALOUSY_KEYWORDS = ['别的女生', '别的男生', '另一个女的', '另一个男的', '她比你好', '他比你好', '我陪别人', '别人更好', '前任'];
 const CARING_KEYWORDS = ['你没事吧', '别难过', '辛苦了', '抱抱你', '你还好吗', '我陪你', '别怕', '有我在', '心疼你', '照顾你'];
 
@@ -78,8 +81,8 @@ function pickMood(candidates: Mood[], current: Mood, stability: number): Mood {
 export function ensureEmotionState(userId: number, characterId: number): void {
   db.prepare(
     `INSERT OR IGNORE INTO emotion_state
-       (user_id, character_id, mood, affection, trust_score, jealousy_score, stability_score)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+       (user_id, character_id, mood, affection, trust_score, jealousy_score, anger_score, stability_score)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     userId,
     characterId,
@@ -87,12 +90,13 @@ export function ensureEmotionState(userId: number, characterId: number): void {
     DEFAULT_EMOTION.affection,
     DEFAULT_EMOTION.trustScore,
     DEFAULT_EMOTION.jealousyScore,
+    DEFAULT_EMOTION.angerScore,
     DEFAULT_EMOTION.stabilityScore
   );
 
   db.prepare(
     `UPDATE emotion_state
-     SET mood = ?, affection = ?, trust_score = ?, jealousy_score = ?, stability_score = ?, updated_at = datetime('now')
+     SET mood = ?, affection = ?, trust_score = ?, jealousy_score = ?, anger_score = ?, stability_score = ?, updated_at = datetime('now')
      WHERE user_id = ? AND character_id = ?
        AND mood = 'warm' AND affection = 0.5 AND trust_score = 0.5
        AND jealousy_score = 0.0 AND stability_score = 0.8 AND last_trigger IS NULL`
@@ -101,6 +105,7 @@ export function ensureEmotionState(userId: number, characterId: number): void {
     DEFAULT_EMOTION.affection,
     DEFAULT_EMOTION.trustScore,
     DEFAULT_EMOTION.jealousyScore,
+    DEFAULT_EMOTION.angerScore,
     DEFAULT_EMOTION.stabilityScore,
     userId,
     characterId
@@ -151,7 +156,7 @@ export function updateEmotionState(
   const relTrust = rel?.trust ?? 0.5;
   const comfortLevel = rel?.comfort_level ?? 0.5;
 
-  let { affection, trust_score, jealousy_score, stability_score, mood } = state;
+  let { affection, trust_score, jealousy_score, anger_score = 0, stability_score, mood } = state;
   let trigger: string | null = state.last_trigger;
   let moodChanged = false;
 
@@ -163,6 +168,7 @@ export function updateEmotionState(
   if (containsAny(userInput, INTIMATE_KEYWORDS)) {
     affection += delta(0.07, userInput);
     trust_score += delta(0.04, userInput);
+    anger_score -= delta(0.035, userInput);
     mood = pickMood(['warm', 'happy', 'shy'], mood, stability_score);
     trigger = '亲密表达';
     moodChanged = true;
@@ -174,6 +180,7 @@ export function updateEmotionState(
     const dampening = closeness >= 0.7 ? 0.5 : 1.0;
     affection -= delta(0.075, userInput) * dampening;
     trust_score -= delta(0.075, userInput) * dampening;
+    anger_score += delta(containsAny(userInput, ANGER_KEYWORDS) ? 0.13 : 0.08, userInput) * dampening;
     // trust 高时不容易直接变 distant
     if (relTrust >= 0.6) {
       mood = pickMood(['upset'], mood, stability_score);
@@ -187,6 +194,7 @@ export function updateEmotionState(
   // 规则3：第三者/其他异性话题
   if (containsAny(userInput, JEALOUSY_KEYWORDS)) {
     jealousy_score += delta(0.12, userInput);
+    anger_score += delta(0.03, userInput);
     // closeness 高时偏"轻微在意"，不变攻击性吃醋
     if (closeness >= 0.6) {
       mood = pickMood(['jealous', 'shy'], mood, stability_score);
@@ -201,6 +209,7 @@ export function updateEmotionState(
   if (containsAny(userInput, CARING_KEYWORDS)) {
     affection += delta(0.05, userInput);
     trust_score += delta(0.07, userInput);
+    anger_score -= delta(0.06, userInput);
     mood = pickMood(['caring', 'warm', 'shy'], mood, stability_score);
     trigger = '被安慰关心';
     moodChanged = true;
@@ -209,6 +218,10 @@ export function updateEmotionState(
   // 自然衰减：jealousy 缓慢回落
   if (!containsAny(userInput, JEALOUSY_KEYWORDS)) {
     jealousy_score -= 0.01;
+  }
+
+  if (!containsAny(userInput, COLD_KEYWORDS) && !containsAny(userInput, ANGER_KEYWORDS)) {
+    anger_score -= 0.015;
   }
 
   // 情绪稳定机制：没有明显触发时不改 mood
@@ -231,14 +244,15 @@ export function updateEmotionState(
   affection = clamp(affection);
   trust_score = clamp(trust_score);
   jealousy_score = clamp(jealousy_score);
+  anger_score = clamp(anger_score);
   stability_score = clamp(stability_score);
 
   db.prepare(
     `UPDATE emotion_state
-     SET mood = ?, affection = ?, trust_score = ?, jealousy_score = ?,
+     SET mood = ?, affection = ?, trust_score = ?, jealousy_score = ?, anger_score = ?,
          stability_score = ?, last_trigger = ?, updated_at = datetime('now')
      WHERE user_id = ? AND character_id = ?`
-  ).run(mood, affection, trust_score, jealousy_score, stability_score, trigger, userId, characterId);
+  ).run(mood, affection, trust_score, jealousy_score, anger_score, stability_score, trigger, userId, characterId);
 }
 
 /**
@@ -251,7 +265,9 @@ export function buildEmotionPrompt(state: EmotionState): string {
     playful: '她现在有点想逗用户，语气可以稍微俏皮一点。',
     shy: '她现在有一点害羞，语气会稍微收一点，但依然亲近。',
     caring: '她现在更愿意照顾用户情绪，语气更柔和体贴。',
-    upset: '她现在有点委屈或不开心，语气克制地带一点情绪。',
+    upset: state.anger_score >= 0.45
+      ? '她现在明显生气了，会克制但直接地表达不满，不会立刻软下来。'
+      : '她现在有点委屈或不开心，语气克制地带一点情绪。',
     jealous: '她现在会有一点在意和试探，但不会直接说破。',
     distant: '她现在会稍微收着一点，不会像平时那么主动热情。',
   };

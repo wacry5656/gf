@@ -97,6 +97,7 @@ db.exec(`
     affection REAL DEFAULT 0.72,
     trust_score REAL DEFAULT 0.62,
     jealousy_score REAL DEFAULT 0.0,
+    anger_score REAL DEFAULT 0.0,
     stability_score REAL DEFAULT 0.72,
     last_trigger TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -149,6 +150,7 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memories ADD COLUMN relationship_subtype TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN invalidation_reason TEXT' },
   { sql: "ALTER TABLE memories ADD COLUMN keywords TEXT DEFAULT '[]'" },
+  { sql: 'ALTER TABLE emotion_state ADD COLUMN anger_score REAL DEFAULT 0.0' },
 ];
 
 for (const m of migrations) {

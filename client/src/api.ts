@@ -306,6 +306,7 @@ export interface EmotionInfo {
   affection: number;
   trust_score: number;
   jealousy_score: number;
+  anger_score: number;
 }
 
 export async function getEmotion(characterId: number, userId: number): Promise<EmotionInfo | null> {

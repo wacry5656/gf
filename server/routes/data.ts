@@ -230,6 +230,7 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
         affection: 0.72,
         trust_score: 0.62,
         jealousy_score: 0,
+        anger_score: 0,
       });
       return;
     }
@@ -240,6 +241,7 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
       affection: state.affection,
       trust_score: state.trust_score,
       jealousy_score: state.jealousy_score,
+      anger_score: state.anger_score ?? 0,
     });
   } catch (err: any) {
     console.error('Get emotion error:', err?.message);

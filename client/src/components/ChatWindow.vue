@@ -40,6 +40,7 @@ const statusItems = computed(() => {
     { label: '亲近', value: relationship?.closeness ?? 0.72, tone: 'violet' },
     { label: '依赖', value: relationship?.dependence ?? 0.64, tone: 'green' },
     { label: '安心', value: relationship?.comfort_level ?? 0.74, tone: 'amber' },
+    { label: '生气', value: emotion?.anger_score ?? 0, tone: 'red' },
     { label: '吃醋', value: emotion?.jealousy_score ?? 0, tone: 'slate' },
   ]
 })
@@ -372,6 +373,7 @@ function handleKeydown(e: KeyboardEvent) {
 .tone-violet { background: #7c5cff; }
 .tone-green { background: #35a66f; }
 .tone-amber { background: #d99328; }
+.tone-red { background: #d14343; }
 .tone-slate { background: #64748b; }
 
 .relationship-note {
