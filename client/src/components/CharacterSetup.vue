@@ -15,26 +15,10 @@ const presetPersonalities = [
   '成熟稳重、可靠温暖',
 ]
 
-const temperPresets = [
-  '脾气软，生气也会先讲道理',
-  '有点小脾气，熟了会嘴硬',
-  '傲娇毒舌，反击快但不伤人',
-  '情绪稳定，很少真正发火',
-]
-
-const relationPresets = [
-  '默认是用户的对象，亲近自然',
-  '默认是用户的对象，慢热但认真',
-  '黏人一点，需要被回应和在意',
-  '边界感强，不喜欢被命令',
-]
-
 const form = reactive({
   name: '',
   gender: 'female' as Character['gender'],
   personality: presetPersonalities[0],
-  temper: temperPresets[1],
-  relationStyle: relationPresets[1],
   customPersonality: '',
   useCustom: false,
   description: '',
@@ -46,18 +30,18 @@ function submit() {
     ? form.customPersonality.trim()
     : form.personality
   if (!personality) return
-  const descriptionParts = [
-    '身份认同：默认把自己当作用户的对象/恋人',
-    form.description.trim(),
-    `脾气设定：${form.temper}`,
-    `关系风格：${form.relationStyle}`,
-  ].filter(Boolean)
 
   emit('confirm', {
     name: form.name.trim(),
     gender: form.gender,
-    personality: `${personality}；${form.temper}`,
-    description: descriptionParts.join('。') || '身份认同：默认把自己当作用户的对象/恋人',
+    personality,
+    description: form.description.trim() || (
+      form.gender === 'female'
+        ? '你是用户的女朋友，你们正在恋爱中，日常聊天温馨甜蜜'
+        : form.gender === 'male'
+          ? '你是用户的男朋友，你们正在恋爱中，日常聊天温馨甜蜜'
+        : '你默认认同自己是用户的对象/恋人，关系亲密，聊天自然有陪伴感和暧昧感'
+    ),
   })
 }
 </script>
@@ -97,26 +81,12 @@ function submit() {
         </div>
 
         <div class="field">
-          <label>脾气设定</label>
-          <select v-model="form.temper">
-            <option v-for="p in temperPresets" :key="p" :value="p">{{ p }}</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label>关系风格</label>
-          <select v-model="form.relationStyle">
-            <option v-for="p in relationPresets" :key="p" :value="p">{{ p }}</option>
-          </select>
-        </div>
-
-        <div class="field">
           <label>角色描述 <span class="optional">(可选)</span></label>
           <textarea v-model="form.description" placeholder="描述角色的背景、说话风格等..."
             rows="3" maxlength="300"></textarea>
         </div>
 
-        <button type="submit" class="btn-primary">开始相处</button>
+        <button type="submit" class="btn-primary">开始聊天</button>
       </form>
     </div>
   </div>

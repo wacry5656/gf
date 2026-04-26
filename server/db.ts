@@ -15,6 +15,9 @@ const db = new Database(DB_PATH);
 // 启用 WAL 模式，提升并发性能
 db.pragma('journal_mode = WAL');
 
+// 启用外键约束
+db.pragma('foreign_keys = ON');
+
 // 初始化表结构
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -76,16 +79,45 @@ db.exec(`
     FOREIGN KEY (character_id) REFERENCES characters(id)
   );
 
-  CREATE TABLE IF NOT EXISTS character_states (
-    character_id INTEGER PRIMARY KEY,
-    affection INTEGER DEFAULT 72,
-    trust INTEGER DEFAULT 62,
-    tension INTEGER DEFAULT 4,
-    attachment INTEGER DEFAULT 64,
+  CREATE TABLE IF NOT EXISTS personality_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS emotion_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
     mood TEXT DEFAULT 'warm',
-    last_user_tone TEXT DEFAULT 'neutral',
+    affection REAL DEFAULT 0.72,
+    trust_score REAL DEFAULT 0.62,
+    jealousy_score REAL DEFAULT 0.0,
+    stability_score REAL DEFAULT 0.72,
+    last_trigger TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, character_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS relationship_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    closeness REAL DEFAULT 0.72,
+    trust REAL DEFAULT 0.62,
+    dependence REAL DEFAULT 0.64,
+    comfort_level REAL DEFAULT 0.74,
+    phase TEXT DEFAULT 'attached',
     last_event TEXT,
-    updated_at TEXT DEFAULT (datetime('now')),
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, character_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (character_id) REFERENCES characters(id)
   );
 
@@ -93,11 +125,10 @@ db.exec(`
     cache_key TEXT PRIMARY KEY,
     model TEXT NOT NULL,
     text_hash TEXT NOT NULL,
-    text_preview TEXT,
     embedding TEXT NOT NULL,
     hit_count INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
-    last_hit_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now'))
   );
 `);
 
@@ -109,7 +140,6 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memory_summaries ADD COLUMN memory_count_at_update INTEGER DEFAULT 0' },
   // v4 migrations
   { sql: "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'other'" },
-  { sql: "ALTER TABLE memories ADD COLUMN keywords TEXT DEFAULT '[]'" },
   { sql: 'ALTER TABLE memories ADD COLUMN is_active INTEGER DEFAULT 1' },
   { sql: 'ALTER TABLE memories ADD COLUMN superseded_by INTEGER' },
   { sql: 'ALTER TABLE memories ADD COLUMN hit_count INTEGER DEFAULT 0' },
@@ -118,14 +148,7 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memories ADD COLUMN expires_at TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN relationship_subtype TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN invalidation_reason TEXT' },
-  { sql: 'ALTER TABLE character_states ADD COLUMN affection INTEGER DEFAULT 72' },
-  { sql: 'ALTER TABLE character_states ADD COLUMN trust INTEGER DEFAULT 62' },
-  { sql: 'ALTER TABLE character_states ADD COLUMN tension INTEGER DEFAULT 4' },
-  { sql: 'ALTER TABLE character_states ADD COLUMN attachment INTEGER DEFAULT 64' },
-  { sql: "ALTER TABLE character_states ADD COLUMN mood TEXT DEFAULT 'warm'" },
-  { sql: "ALTER TABLE character_states ADD COLUMN last_user_tone TEXT DEFAULT 'neutral'" },
-  { sql: 'ALTER TABLE character_states ADD COLUMN last_event TEXT' },
-  { sql: "ALTER TABLE character_states ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))" },
+  { sql: "ALTER TABLE memories ADD COLUMN keywords TEXT DEFAULT '[]'" },
 ];
 
 for (const m of migrations) {

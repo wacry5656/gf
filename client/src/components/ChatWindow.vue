@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, nextTick, watch } from 'vue'
-import type { Character, ChatMessage, CharacterInsights, RelationshipState } from '../api'
-import { sendMessage, saveMessage, clearMessages, getCharacterState, getCharacterInsights } from '../api'
+import { ref, nextTick, watch, onMounted } from 'vue'
+import type { Character, ChatMessage } from '../api'
+import { sendMessageStream, saveMessage, clearMessages, getEmotion, getRelationship, StreamChatError } from '../api'
 
 const props = defineProps<{
   character: Character
   messages: ChatMessage[]
+  userId: number
 }>()
 
 const emit = defineEmits<{
@@ -14,38 +15,40 @@ const emit = defineEmits<{
 
 const inputText = ref('')
 const loading = ref(false)
+const streaming = ref(false)
 const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
-const relationshipState = ref<RelationshipState | null>(null)
-const insights = ref<CharacterInsights | null>(null)
-const showInsights = ref(true)
+const moodLabel = ref('')
+const phaseLabel = ref('')
 
-const avatarText = computed(() => props.character.name.trim().slice(0, 1) || '她')
-const inputHint = computed(() => `${inputText.value.trim().length} 字`)
-const moodLabel = computed(() => {
-  const mood = relationshipState.value?.mood || 'steady'
-  const map: Record<string, string> = {
-    steady: '平稳',
-    soft: '心软',
-    warm: '亲近',
-    concerned: '担心',
-    clingy: '黏人',
-    guarded: '有脾气',
-    angry: '生气',
+async function fetchEmotion() {
+  if (!props.character?.id || !props.userId) {
+    moodLabel.value = ''
+    return
   }
-  return map[mood] || mood
-})
+  const info = await getEmotion(props.character.id, props.userId)
+  if (info) moodLabel.value = info.moodLabel
+  else moodLabel.value = ''
+}
 
-const stateItems = computed(() => {
-  const state = relationshipState.value
-  if (!state) return []
-  return [
-    { label: '好感', value: state.affection, className: 'tone-affection' },
-    { label: '信任', value: state.trust, className: 'tone-trust' },
-    { label: '依恋', value: state.attachment, className: 'tone-attachment' },
-    { label: '脾气', value: state.tension, className: 'tone-tension' },
-  ]
-})
+async function fetchRelationship() {
+  if (!props.character?.id || !props.userId) {
+    phaseLabel.value = ''
+    return
+  }
+  const info = await getRelationship(props.character.id, props.userId)
+  if (info) phaseLabel.value = info.phaseLabel
+  else phaseLabel.value = ''
+}
+
+async function fetchStatus() {
+  await Promise.all([fetchEmotion(), fetchRelationship()])
+}
+
+onMounted(fetchStatus)
+
+watch(() => props.character?.id, fetchStatus)
+watch(() => props.userId, fetchStatus)
 
 function scrollToBottom() {
   nextTick(() => {
@@ -56,24 +59,6 @@ function scrollToBottom() {
 }
 
 watch(() => props.messages.length, scrollToBottom)
-watch(() => props.character.id, () => {
-  relationshipState.value = null
-  insights.value = null
-  loadMeta()
-}, { immediate: true })
-
-onMounted(loadMeta)
-
-async function loadMeta() {
-  if (!props.character.id) return
-  const characterId = props.character.id
-  const [stateResult, insightsResult] = await Promise.allSettled([
-    getCharacterState(characterId),
-    getCharacterInsights(characterId),
-  ])
-  relationshipState.value = stateResult.status === 'fulfilled' ? stateResult.value : null
-  insights.value = insightsResult.status === 'fulfilled' ? insightsResult.value : null
-}
 
 async function send() {
   const text = inputText.value.trim()
@@ -85,41 +70,80 @@ async function send() {
   emit('update:messages', updated)
   inputText.value = ''
   loading.value = true
+  streaming.value = false
 
   // 保存用户消息到数据库
   if (props.character.id) {
-    saveMessage(props.character.id, 'user', text).catch(() => {})
+    saveMessage(props.character.id, 'user', text, props.userId).catch((e) => {
+      console.error('[ChatWindow] 保存用户消息失败:', e)
+    })
   }
 
-  try {
-    const replies = await sendMessage(props.character, updated)
-    let current = [...updated]
-    for (const reply of replies) {
-      const assistantMsg: ChatMessage = { role: 'assistant', content: reply }
-      current = [...current, assistantMsg]
-    }
-    emit('update:messages', current)
+  let connected = false
 
-    // 保存每条 AI 回复到数据库
-    if (props.character.id) {
-      for (const reply of replies) {
-        saveMessage(props.character.id, 'assistant', reply).catch(() => {})
+  try {
+    let streamContent = ''
+
+    const replies = await sendMessageStream(
+      props.character,
+      updated,
+      (delta) => {
+        if (!streaming.value) {
+          // First chunk: switch from "思考中..." to streaming display
+          streaming.value = true
+        }
+        streamContent += delta
+        emit('update:messages', [
+          ...updated,
+          { role: 'assistant', content: streamContent }
+        ])
+        scrollToBottom()
+      },
+      props.userId,
+      () => {
+        // onReady: connection established, don't show error yet
+        connected = true
       }
-      loadMeta()
+    )
+
+    // Replace streaming message with cleaned/split replies
+    if (replies.length > 0) {
+      const finalMessages = [...updated]
+      for (const reply of replies) {
+        finalMessages.push({ role: 'assistant', content: reply })
+      }
+      emit('update:messages', finalMessages)
+    } else if (streamContent) {
+      // Fallback: no split replies received, use raw stream content
+      emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
     }
+    // AI 回复由服务端兜底保存，前端不再重复保存
+    // 刷新情绪和关系标签
+    fetchStatus()
   } catch (e: any) {
-    error.value = e.message || '发送失败'
+    if (e instanceof StreamChatError) {
+      error.value = e.message
+    } else if (connected && !streaming.value) {
+      error.value = e.message || '连接已建立，但回复生成超时，请重试'
+    } else {
+      error.value = e.message || '发送失败'
+    }
+    if (!(e instanceof StreamChatError && e.stage === 'after-partial') && !streaming.value) {
+      emit('update:messages', updated)
+    }
   } finally {
     loading.value = false
+    streaming.value = false
   }
 }
 
 async function onClearHistory() {
   if (!props.character.id) return
   try {
-    await clearMessages(props.character.id)
+    await clearMessages(props.character.id, props.userId)
     emit('update:messages', [])
-  } catch {
+  } catch (e) {
+    console.error('[ChatWindow] 清空聊天记录失败:', e)
     error.value = '清空失败'
   }
 }
@@ -134,120 +158,53 @@ function handleKeydown(e: KeyboardEvent) {
 
 <template>
   <div class="chat-container">
-    <div class="chat-topbar">
-      <div class="profile-block">
-        <div class="profile-avatar">{{ avatarText }}</div>
-        <div class="profile-main">
-          <div class="profile-line">
-            <strong>{{ character.name }}</strong>
-            <span class="mood-pill">{{ moodLabel }}</span>
-          </div>
-          <div class="profile-personality">{{ character.personality }}</div>
-        </div>
-      </div>
-
-      <div class="state-grid" v-if="stateItems.length">
-        <div v-for="item in stateItems" :key="item.label" class="state-item">
-          <span>{{ item.label }}</span>
-          <div class="state-track">
-            <i :class="item.className" :style="{ width: `${item.value}%` }"></i>
-          </div>
-          <b>{{ item.value }}</b>
-        </div>
-      </div>
-
-      <div class="top-actions">
-        <button class="btn-clear" @click="showInsights = !showInsights">
-          {{ showInsights ? '收起记忆' : '记忆' }}
-        </button>
-        <button v-if="messages.length > 0" class="btn-clear" @click="onClearHistory">清空</button>
-      </div>
+    <div class="chat-info">
+      正在与「<strong>{{ character.name }}</strong>」聊天
+      <span v-if="moodLabel" class="emotion-tag">{{ moodLabel }}</span>
+      <span v-if="phaseLabel" class="relation-tag">{{ phaseLabel }}</span>
+      <span class="chat-personality">— {{ character.personality }}</span>
+      <button v-if="messages.length > 0" class="btn-clear" @click="onClearHistory">清空记录</button>
     </div>
 
-    <div class="chat-main" :class="{ 'with-insights': showInsights }">
-      <div class="chat-body" ref="chatBody">
-        <div v-if="messages.length === 0" class="chat-empty">
-          <div class="empty-avatar">{{ avatarText }}</div>
-          <strong>和 {{ character.name }} 开始聊天</strong>
-          <span>她默认把自己当作你的对象，也会慢慢形成更多印象。</span>
-        </div>
-
-        <div
-          v-for="(msg, i) in messages"
-          :key="i"
-          :class="[
-            'message',
-            msg.role === 'user' ? 'message-user' : 'message-assistant',
-            i > 0 && messages[i - 1].role === msg.role ? 'message-consecutive' : ''
-          ]"
-        >
-          <div v-if="!(i > 0 && messages[i - 1].role === msg.role)" class="message-label">
-            {{ msg.role === 'user' ? '你' : character.name }}
-          </div>
-          <div class="message-bubble">{{ msg.content }}</div>
-        </div>
-
-        <div v-if="loading" class="message message-assistant">
-          <div class="message-label">{{ character.name }}</div>
-          <div class="message-bubble typing">思考中...</div>
-        </div>
+    <div class="chat-body" ref="chatBody">
+      <div v-if="messages.length === 0" class="chat-empty">
+        发送消息开始和「{{ character.name }}」聊天吧 ✨
       </div>
 
-      <aside v-if="showInsights" class="insights-panel">
-        <div class="insight-head">
-          <strong>记忆面板</strong>
-          <span>{{ insights?.memoryCount || 0 }} 条</span>
+      <div
+        v-for="(msg, i) in messages"
+        :key="i"
+        :class="[
+          'message',
+          msg.role === 'user' ? 'message-user' : 'message-assistant',
+          i > 0 && messages[i - 1].role === msg.role ? 'message-consecutive' : ''
+        ]"
+      >
+        <div v-if="!(i > 0 && messages[i - 1].role === msg.role)" class="message-label">
+          {{ msg.role === 'user' ? '你' : character.name }}
         </div>
+        <div class="message-bubble">{{ msg.content }}</div>
+      </div>
 
-        <section v-if="insights?.summary" class="insight-section">
-          <h3>画像摘要</h3>
-          <p>{{ insights.summary }}</p>
-        </section>
-
-        <section v-if="insights?.activePlans?.length" class="insight-section">
-          <h3>未完成计划</h3>
-          <ul>
-            <li v-for="item in insights.activePlans" :key="item">{{ item }}</li>
-          </ul>
-        </section>
-
-        <section v-if="insights?.recentStates?.length" class="insight-section">
-          <h3>近期状态</h3>
-          <ul>
-            <li v-for="item in insights.recentStates" :key="item">{{ item }}</li>
-          </ul>
-        </section>
-
-        <section v-if="insights?.coreMemories?.length" class="insight-section">
-          <h3>核心记忆</h3>
-          <ul>
-            <li v-for="item in insights.coreMemories" :key="item">{{ item }}</li>
-          </ul>
-        </section>
-
-        <div v-if="!insights || insights.memoryCount === 0" class="insight-empty">
-          还没有形成长期记忆
-        </div>
-      </aside>
+      <div v-if="loading && !streaming" class="message message-assistant">
+        <div class="message-label">{{ character.name }}</div>
+        <div class="message-bubble typing">思考中...</div>
+      </div>
     </div>
 
     <div v-if="error" class="chat-error">{{ error }}</div>
 
-    <div class="composer">
+    <div class="chat-input-bar">
       <textarea
         v-model="inputText"
         @keydown="handleKeydown"
-        placeholder="说点什么，Enter 发送，Shift + Enter 换行"
-        rows="2"
-        maxlength="1200"
+        placeholder="输入消息... (Enter 发送)"
+        rows="1"
         :disabled="loading"
       ></textarea>
-      <div class="composer-actions">
-        <span>{{ inputHint }}</span>
-        <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
-          {{ loading ? '生成中' : '发送' }}
-        </button>
-      </div>
+      <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
+        {{ loading ? '...' : '发送' }}
+      </button>
     </div>
   </div>
 </template>
@@ -257,124 +214,55 @@ function handleKeydown(e: KeyboardEvent) {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #eef1f4;
+  background: #f0f2f5;
   overflow: hidden;
 }
 
-.chat-topbar {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(260px, 420px) auto;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 18px;
-  background: rgba(255, 255, 255, 0.94);
-  border-bottom: 1px solid #dfe4ea;
+.chat-info {
+  padding: 10px 20px;
+  background: #fff;
+  border-bottom: 1px solid #e8e8e8;
+  font-size: 0.85rem;
+  color: #555;
   flex-shrink: 0;
-}
-
-.profile-block {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-width: 0;
 }
 
-.profile-avatar,
-.empty-avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  background: #25324a;
-  color: #fff;
-  font-weight: 700;
+.chat-personality {
+  color: #999;
+  flex: 1;
 }
 
-.profile-main {
-  min-width: 0;
-}
-
-.profile-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #172033;
-}
-
-.mood-pill {
+.emotion-tag {
+  display: inline-block;
+  background: #f3f0ff;
+  color: #6c63ff;
+  font-size: 0.75rem;
   padding: 2px 8px;
-  border-radius: 999px;
-  background: #edf3ff;
-  color: #365f9d;
-  font-size: 0.72rem;
-  font-weight: 700;
+  border-radius: 10px;
+  margin-left: 8px;
 }
 
-.profile-personality {
-  margin-top: 2px;
-  color: #667085;
-  font-size: 0.78rem;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.state-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(110px, 1fr));
-  gap: 8px 12px;
-}
-
-.state-item {
-  display: grid;
-  grid-template-columns: 34px 1fr 24px;
-  align-items: center;
-  gap: 6px;
-  color: #667085;
-  font-size: 0.72rem;
-}
-
-.state-track {
-  height: 5px;
-  border-radius: 999px;
-  background: #e5e7eb;
-  overflow: hidden;
-}
-
-.state-track i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  transition: width 220ms ease;
-}
-
-.tone-affection { background: #e85d75; }
-.tone-trust { background: #2f80ed; }
-.tone-attachment { background: #8b5cf6; }
-.tone-tension { background: #f59e0b; }
-
-.state-item b {
-  color: #344054;
-  font-size: 0.7rem;
-  text-align: right;
-}
-
-.top-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+.relation-tag {
+  display: inline-block;
+  background: #fff0f6;
+  color: #e91e8c;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 4px;
 }
 
 .btn-clear {
-  background: #fff;
-  border: 1px solid #d0d5dd;
-  color: #667085;
-  padding: 7px 12px;
-  border-radius: 8px;
-  font-size: 0.78rem;
+  background: none;
+  border: 1px solid #ddd;
+  color: #999;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.75rem;
   cursor: pointer;
+  margin-left: auto;
 }
 
 .btn-clear:hover {
@@ -382,109 +270,24 @@ function handleKeydown(e: KeyboardEvent) {
   border-color: #e53935;
 }
 
-.chat-main {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr;
-}
-
-.chat-main.with-insights {
-  grid-template-columns: minmax(0, 1fr) 280px;
-}
-
 .chat-body {
-  min-height: 0;
+  flex: 1;
   overflow-y: auto;
-  padding: 22px 24px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.insights-panel {
-  min-height: 0;
-  overflow-y: auto;
-  padding: 18px 16px;
-  background: #f8fafc;
-  border-left: 1px solid #dfe4ea;
-}
-
-.insight-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: #172033;
-  font-size: 0.9rem;
-  margin-bottom: 14px;
-}
-
-.insight-head span {
-  color: #667085;
-  font-size: 0.75rem;
-}
-
-.insight-section {
-  padding: 12px 0;
-  border-top: 1px solid #e4e7ec;
-}
-
-.insight-section h3 {
-  margin: 0 0 8px;
-  color: #344054;
-  font-size: 0.76rem;
-}
-
-.insight-section p,
-.insight-section li,
-.insight-empty {
-  color: #667085;
-  font-size: 0.78rem;
-  line-height: 1.55;
-}
-
-.insight-section ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 7px;
-}
-
-.insight-section li {
-  padding: 7px 8px;
-  background: #fff;
-  border: 1px solid #e4e7ec;
-  border-radius: 8px;
-}
-
-.insight-empty {
-  padding-top: 14px;
-  border-top: 1px solid #e4e7ec;
+  gap: 12px;
 }
 
 .chat-empty {
-  margin: auto;
-  min-width: min(320px, 90%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  color: #667085;
   text-align: center;
-}
-
-.chat-empty strong {
-  color: #172033;
-  font-size: 1rem;
-}
-
-.chat-empty span {
-  font-size: 0.86rem;
+  color: #aaa;
+  margin-top: 60px;
+  font-size: 0.95rem;
 }
 
 .message {
-  max-width: min(72%, 560px);
+  max-width: 75%;
 }
 
 .message-consecutive {
@@ -501,7 +304,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 .message-label {
   font-size: 0.75rem;
-  color: #667085;
+  color: #888;
   margin-bottom: 4px;
   padding: 0 4px;
 }
@@ -511,8 +314,8 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 .message-bubble {
-  padding: 10px 13px;
-  border-radius: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
   font-size: 0.95rem;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -520,17 +323,16 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 .message-user .message-bubble {
-  background: #25324a;
+  background: #6c63ff;
   color: #fff;
-  border-bottom-right-radius: 5px;
+  border-bottom-right-radius: 4px;
 }
 
 .message-assistant .message-bubble {
   background: #fff;
-  color: #172033;
-  border: 1px solid #e4e7ec;
-  border-bottom-left-radius: 5px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  color: #333;
+  border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
 .typing {
@@ -550,50 +352,36 @@ function handleKeydown(e: KeyboardEvent) {
   flex-shrink: 0;
 }
 
-.composer {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 12px;
-  padding: 14px 18px;
+.chat-input-bar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
   background: #fff;
-  border-top: 1px solid #dfe4ea;
+  border-top: 1px solid #e8e8e8;
   flex-shrink: 0;
 }
 
-.composer textarea {
-  width: 100%;
-  padding: 11px 13px;
-  border: 1px solid #d0d5dd;
-  border-radius: 10px;
+.chat-input-bar textarea {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
   font-size: 0.95rem;
   resize: none;
   font-family: inherit;
-  min-height: 52px;
-  max-height: 120px;
-  color: #172033;
-  background: #f9fafb;
+  min-height: 40px;
+  max-height: 100px;
+  box-sizing: border-box;
 }
 
-.composer textarea:focus {
+.chat-input-bar textarea:focus {
   outline: none;
-  border-color: #25324a;
-  background: #fff;
-}
-
-.composer-actions {
-  min-width: 82px;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 8px;
-  color: #98a2b3;
-  font-size: 0.72rem;
+  border-color: #6c63ff;
 }
 
 .btn-send {
-  padding: 10px 16px;
-  background: #25324a;
+  padding: 10px 20px;
+  background: #6c63ff;
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -604,47 +392,11 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #344563;
+  background: #5a52d9;
 }
 
 .btn-send:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-@media (max-width: 720px) {
-  .chat-topbar {
-    grid-template-columns: 1fr auto;
-  }
-
-  .state-grid {
-    grid-column: 1 / -1;
-  }
-
-  .top-actions {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .chat-main.with-insights {
-    grid-template-columns: 1fr;
-  }
-
-  .insights-panel {
-    display: none;
-  }
-
-  .message {
-    max-width: 86%;
-  }
-
-  .composer {
-    grid-template-columns: 1fr;
-  }
-
-  .composer-actions {
-    flex-direction: row;
-    align-items: center;
-  }
 }
 </style>

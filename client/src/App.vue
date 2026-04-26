@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import type { Character, ChatMessage, User } from './api'
 import { getCharacters, createCharacter, deleteCharacter, getMessages } from './api'
+import { getCurrentUser, saveUser, clearUser } from './userSession'
 import LoginPage from './components/LoginPage.vue'
 import CharacterSetup from './components/CharacterSetup.vue'
 import ChatWindow from './components/ChatWindow.vue'
@@ -15,18 +16,16 @@ const loading = ref(false)
 
 // 初始化：检查本地存储的登录信息
 onMounted(() => {
-  const saved = localStorage.getItem('user')
+  const saved = getCurrentUser()
   if (saved) {
-    try {
-      user.value = JSON.parse(saved)
-      loadCharacters()
-    } catch { /* ignore */ }
+    user.value = saved
+    loadCharacters()
   }
 })
 
 function onLogin(u: User) {
   user.value = u
-  localStorage.setItem('user', JSON.stringify(u))
+  saveUser(u)
   loadCharacters()
 }
 
@@ -36,7 +35,7 @@ function onLogout() {
   chatMessages.value = []
   characters.value = []
   showNewCharacter.value = false
-  localStorage.removeItem('user')
+  clearUser()
 }
 
 async function loadCharacters() {
@@ -67,24 +66,26 @@ async function onCharacterConfirm(char: Character) {
 async function selectCharacter(char: Character) {
   activeCharacter.value = char
   chatMessages.value = []
-  if (char.id) {
+  if (char.id && user.value) {
     try {
-      chatMessages.value = await getMessages(char.id)
-    } catch { /* ignore */ }
+      chatMessages.value = await getMessages(char.id, user.value.userId)
+    } catch (e) { console.error('[App] 加载历史消息失败:', e) }
   }
 }
 
 async function onDeleteCharacter(char: Character) {
-  if (!char.id) return
+  if (!char.id || !user.value) return
   try {
-    await deleteCharacter(char.id)
-    characters.value = characters.value.filter(c => c.id !== char.id)
+    await deleteCharacter(char.id, user.value.userId)
+    // 删除成功后，重新请求角色列表而非只做本地过滤
     if (activeCharacter.value?.id === char.id) {
       activeCharacter.value = null
       chatMessages.value = []
     }
+    await loadCharacters()
   } catch (e: any) {
     console.error(e)
+    alert(e.message || '删除角色失败，请重试')
   }
 }
 
@@ -125,6 +126,7 @@ function goBack() {
         <ChatWindow
           v-else-if="activeCharacter"
           :character="activeCharacter"
+          :user-id="user.userId"
           v-model:messages="chatMessages"
         />
 

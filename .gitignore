@@ -19,3 +19,8 @@ data/
 
 # build cache
 .cache
+
+# server source compiled artifacts (tsc / vue-tsc)
+server/**/*.js
+server/**/*.js.map
+server/**/*.d.ts
