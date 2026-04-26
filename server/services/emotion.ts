@@ -31,10 +31,18 @@ export interface EmotionState {
 
 // ========== 关键词规则 ==========
 
-const INTIMATE_KEYWORDS = ['想你', '抱抱', '亲亲', '爱你', '宝宝', '老婆', '乖', '宝贝'];
-const COLD_KEYWORDS = ['随便', '算了', '滚', '闭嘴', '烦死了', '别吵', '懒得理你', '无所谓'];
-const JEALOUSY_KEYWORDS = ['别的女生', '另一个女的', '她比你好', '我陪别人', '别人更好'];
-const CARING_KEYWORDS = ['你没事吧', '别难过', '辛苦了', '抱抱你', '你还好吗'];
+const DEFAULT_EMOTION = {
+  mood: 'warm' as Mood,
+  affection: 0.72,
+  trustScore: 0.62,
+  jealousyScore: 0,
+  stabilityScore: 0.72,
+};
+
+const INTIMATE_KEYWORDS = ['想你', '抱抱', '亲亲', '爱你', '宝宝', '老婆', '老公', '乖', '宝贝', '贴贴', 'mua', '陪我', '想我'];
+const COLD_KEYWORDS = ['随便', '算了', '滚', '闭嘴', '烦死了', '别吵', '懒得理你', '无所谓', '不想理你', '别烦我'];
+const JEALOUSY_KEYWORDS = ['别的女生', '别的男生', '另一个女的', '另一个男的', '她比你好', '他比你好', '我陪别人', '别人更好', '前任'];
+const CARING_KEYWORDS = ['你没事吧', '别难过', '辛苦了', '抱抱你', '你还好吗', '我陪你', '别怕', '有我在', '心疼你', '照顾你'];
 
 // ========== Helpers ==========
 
@@ -44,6 +52,16 @@ function clamp(value: number, min = 0, max = 1): number {
 
 function containsAny(text: string, keywords: string[]): boolean {
   return keywords.some(k => text.includes(k));
+}
+
+function sensitivity(): number {
+  const value = Number(process.env.RELATIONSHIP_STATE_SENSITIVITY || process.env.EMOTION_STATE_SENSITIVITY || 1.65);
+  return Number.isFinite(value) && value > 0 ? value : 1.65;
+}
+
+function delta(value: number, text: string): number {
+  const lengthBoost = text.trim().length >= 20 ? 1.15 : 1;
+  return value * sensitivity() * lengthBoost;
 }
 
 function pickMood(candidates: Mood[], current: Mood, stability: number): Mood {
@@ -59,8 +77,34 @@ function pickMood(candidates: Mood[], current: Mood, stability: number): Mood {
  */
 export function ensureEmotionState(userId: number, characterId: number): void {
   db.prepare(
-    `INSERT OR IGNORE INTO emotion_state (user_id, character_id) VALUES (?, ?)`
-  ).run(userId, characterId);
+    `INSERT OR IGNORE INTO emotion_state
+       (user_id, character_id, mood, affection, trust_score, jealousy_score, stability_score)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    userId,
+    characterId,
+    DEFAULT_EMOTION.mood,
+    DEFAULT_EMOTION.affection,
+    DEFAULT_EMOTION.trustScore,
+    DEFAULT_EMOTION.jealousyScore,
+    DEFAULT_EMOTION.stabilityScore
+  );
+
+  db.prepare(
+    `UPDATE emotion_state
+     SET mood = ?, affection = ?, trust_score = ?, jealousy_score = ?, stability_score = ?, updated_at = datetime('now')
+     WHERE user_id = ? AND character_id = ?
+       AND mood = 'warm' AND affection = 0.5 AND trust_score = 0.5
+       AND jealousy_score = 0.0 AND stability_score = 0.8 AND last_trigger IS NULL`
+  ).run(
+    DEFAULT_EMOTION.mood,
+    DEFAULT_EMOTION.affection,
+    DEFAULT_EMOTION.trustScore,
+    DEFAULT_EMOTION.jealousyScore,
+    DEFAULT_EMOTION.stabilityScore,
+    userId,
+    characterId
+  );
 }
 
 /**
@@ -117,8 +161,8 @@ export function updateEmotionState(
 
   // 规则1：亲密表达
   if (containsAny(userInput, INTIMATE_KEYWORDS)) {
-    affection += 0.05;
-    trust_score += 0.03;
+    affection += delta(0.07, userInput);
+    trust_score += delta(0.04, userInput);
     mood = pickMood(['warm', 'happy', 'shy'], mood, stability_score);
     trigger = '亲密表达';
     moodChanged = true;
@@ -128,8 +172,8 @@ export function updateEmotionState(
   if (!isTooShort && containsAny(userInput, COLD_KEYWORDS)) {
     // closeness 高时减弱负面影响
     const dampening = closeness >= 0.7 ? 0.5 : 1.0;
-    affection -= 0.04 * dampening;
-    trust_score -= 0.05 * dampening;
+    affection -= delta(0.075, userInput) * dampening;
+    trust_score -= delta(0.075, userInput) * dampening;
     // trust 高时不容易直接变 distant
     if (relTrust >= 0.6) {
       mood = pickMood(['upset'], mood, stability_score);
@@ -142,7 +186,7 @@ export function updateEmotionState(
 
   // 规则3：第三者/其他异性话题
   if (containsAny(userInput, JEALOUSY_KEYWORDS)) {
-    jealousy_score += 0.08;
+    jealousy_score += delta(0.12, userInput);
     // closeness 高时偏"轻微在意"，不变攻击性吃醋
     if (closeness >= 0.6) {
       mood = pickMood(['jealous', 'shy'], mood, stability_score);
@@ -155,8 +199,8 @@ export function updateEmotionState(
 
   // 规则4：安慰/关心
   if (containsAny(userInput, CARING_KEYWORDS)) {
-    affection += 0.03;
-    trust_score += 0.05;
+    affection += delta(0.05, userInput);
+    trust_score += delta(0.07, userInput);
     mood = pickMood(['caring', 'warm', 'shy'], mood, stability_score);
     trigger = '被安慰关心';
     moodChanged = true;

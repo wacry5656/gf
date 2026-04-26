@@ -227,8 +227,8 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
       res.json({
         mood: 'warm',
         moodLabel: MOOD_LABEL['warm'],
-        affection: 0.5,
-        trust_score: 0.5,
+        affection: 0.72,
+        trust_score: 0.62,
         jealousy_score: 0,
       });
       return;
@@ -268,10 +268,10 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
     const state = readRelationshipState(userId, characterId);
     if (!state) {
       res.json({
-        phase: 'close',
-        phaseLabel: PHASE_LABEL['close'],
-        closeness: 0.5,
-        trust: 0.5,
+        phase: 'attached',
+        phaseLabel: PHASE_LABEL['attached'],
+        closeness: 0.72,
+        trust: 0.62,
       });
       return;
     }

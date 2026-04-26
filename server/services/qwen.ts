@@ -26,6 +26,8 @@ function getApiConfig() {
   const baseUrl = process.env.QWEN_BASE_URL;
   const model = process.env.QWEN_MODEL || 'qwen-turbo';
   const timeoutMs = Number(process.env.QWEN_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+  const temperature = Number(process.env.QWEN_TEMPERATURE) || 0.85;
+  const topP = Number(process.env.QWEN_TOP_P) || 0.9;
 
   if (!apiKey || apiKey === 'your_api_key_here') {
     console.error('[Qwen] QWEN_API_KEY 未配置或为默认值');
@@ -39,11 +41,11 @@ function getApiConfig() {
 
   const apiUrl = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
-  return { apiKey, apiUrl, model, timeoutMs };
+  return { apiKey, apiUrl, model, timeoutMs, temperature, topP };
 }
 
 export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): Promise<string> {
-  const { apiKey, apiUrl, model, timeoutMs } = getApiConfig();
+  const { apiKey, apiUrl, model, timeoutMs, temperature, topP } = getApiConfig();
 
   let lastError: Error | null = null;
 
@@ -61,8 +63,8 @@ export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): 
         body: JSON.stringify({
           model,
           messages,
-          temperature: 0.85,
-          top_p: 0.9,
+          temperature,
+          top_p: topP,
           max_tokens: maxTokens || 600,
         }),
         signal: controller.signal,
@@ -118,7 +120,7 @@ export async function callQwenAPIStream(
   signal?: AbortSignal,
   maxTokens?: number
 ): Promise<string> {
-  const { apiKey, apiUrl, model } = getApiConfig();
+  const { apiKey, apiUrl, model, temperature, topP } = getApiConfig();
   const streamTimeout = Number(process.env.QWEN_STREAM_TIMEOUT_MS) || STREAM_TIMEOUT_MS;
 
   const controller = new AbortController();
@@ -139,8 +141,8 @@ export async function callQwenAPIStream(
       body: JSON.stringify({
         model,
         messages,
-        temperature: 0.85,
-        top_p: 0.9,
+        temperature,
+        top_p: topP,
         max_tokens: maxTokens || 600,
         stream: true,
       }),

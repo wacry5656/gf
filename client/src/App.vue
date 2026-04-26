@@ -100,7 +100,7 @@ function goBack() {
     <!-- 未登录 -->
     <template v-if="!user">
       <header class="app-header">
-        <h1>💬 虚拟聊天角色</h1>
+        <h1>虚拟聊天角色</h1>
       </header>
       <main class="app-main">
         <LoginPage @login="onLogin" />
@@ -110,7 +110,7 @@ function goBack() {
     <!-- 已登录 -->
     <template v-else>
       <header class="app-header">
-        <h1>💬 虚拟聊天角色</h1>
+        <h1>虚拟聊天角色</h1>
         <div class="header-right">
           <span class="user-info">{{ user.username }}</span>
           <button v-if="activeCharacter" class="btn-header" @click="goBack">返回列表</button>
@@ -134,13 +134,13 @@ function goBack() {
         <div v-else class="char-list-container">
           <div class="char-list-header">
             <h2>我的角色</h2>
-            <button class="btn-primary-sm" @click="showNewCharacter = true">+ 新建角色</button>
+            <button class="btn-primary-sm" @click="showNewCharacter = true">新建角色</button>
           </div>
 
           <div v-if="loading" class="char-loading">加载中...</div>
 
           <div v-else-if="characters.length === 0" class="char-empty">
-            <p>还没有角色，点击上方按钮创建一个吧 ✨</p>
+            <p>还没有角色，先创建一个默认认同为你对象的虚拟人物。</p>
           </div>
 
           <div v-else class="char-grid">
@@ -150,7 +150,7 @@ function goBack() {
               class="char-card"
               @click="selectCharacter(char)"
             >
-              <div class="char-avatar">{{ char.gender === 'female' ? '👧' : char.gender === 'male' ? '👦' : '🧑' }}</div>
+              <div class="char-avatar">{{ char.name.slice(0, 1) }}</div>
               <div class="char-info">
                 <div class="char-name">{{ char.name }}</div>
                 <div class="char-desc">{{ char.personality }}</div>
@@ -170,26 +170,30 @@ function goBack() {
 
 <style scoped>
 .app-container {
-  max-width: 800px;
+  width: min(1120px, 100vw);
   margin: 0 auto;
   height: 100vh;
   display: flex;
   flex-direction: column;
+  background: #eef1f4;
+  border-left: 1px solid #dfe4ea;
+  border-right: 1px solid #dfe4ea;
 }
 
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
-  background: #1a1a2e;
+  padding: 14px 20px;
+  background: #172033;
   color: #fff;
   flex-shrink: 0;
 }
 
 .app-header h1 {
   margin: 0;
-  font-size: 1.3rem;
+  font-size: 1.05rem;
+  letter-spacing: 0;
 }
 
 .header-right {
@@ -236,9 +240,9 @@ function goBack() {
 /* 角色列表 */
 .char-list-container {
   flex: 1;
-  padding: 20px;
+  padding: 24px;
   overflow-y: auto;
-  background: #f0f2f5;
+  background: #eef1f4;
 }
 
 .char-list-header {
@@ -255,7 +259,7 @@ function goBack() {
 }
 
 .btn-primary-sm {
-  background: #6c63ff;
+  background: #25324a;
   color: #fff;
   border: none;
   padding: 8px 16px;
@@ -266,7 +270,7 @@ function goBack() {
 }
 
 .btn-primary-sm:hover {
-  background: #5a52d9;
+  background: #344563;
 }
 
 .char-loading, .char-empty {
@@ -276,9 +280,9 @@ function goBack() {
 }
 
 .char-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
 }
 
 .char-card {
@@ -286,19 +290,29 @@ function goBack() {
   align-items: center;
   gap: 14px;
   background: #fff;
-  border-radius: 10px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
   padding: 14px 16px;
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-  transition: box-shadow 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
 .char-card:hover {
-  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  border-color: #b9c3d1;
+  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.08);
+  transform: translateY(-1px);
 }
 
 .char-avatar {
-  font-size: 2rem;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: #25324a;
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
   flex-shrink: 0;
 }
 

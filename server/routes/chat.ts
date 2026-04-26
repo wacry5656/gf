@@ -9,6 +9,7 @@ import type { Mood } from '../services/emotion';
 import { getRelationshipState, updateRelationshipState, buildRelationshipPrompt } from '../services/relationship';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
+import { estimateTokens, fitRecentMessagesToBudget, trimToTokenBudget, totalMessageTokens } from '../utils/tokenBudget';
 import { ensureCharacterOwnership } from '../utils/ownership';
 import db from '../db';
 
@@ -107,7 +108,11 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
         console.warn(`[Chat] characterId=${characterId} 不存在，降级为临时聊天`);
         // 角色不存在时降级为临时聊天（不使用记忆系统）
         const systemContent = buildSystemPrompt({ character });
-        const recentMessages = messages.slice(-memoryConfig.recentMessageLimit);
+        const recentMessages = fitRecentMessagesToBudget(
+          messages.slice(-memoryConfig.recentMessageLimit),
+          memoryConfig.recentTokenBudget,
+          memoryConfig.singleMessageTokenBudget
+        ) as ChatMessage[];
         const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
         const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
         const maxTokens = getMaxTokens(currentUserText);
@@ -198,7 +203,11 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         console.warn(`[Chat/Stream] characterId=${characterId} 不存在，降级为临时聊天`);
         // 角色不存在时降级为临时聊天
         const systemContent = buildSystemPrompt({ character });
-        const recentMessages = messages.slice(-memoryConfig.recentMessageLimit);
+        const recentMessages = fitRecentMessagesToBudget(
+          messages.slice(-memoryConfig.recentMessageLimit),
+          memoryConfig.recentTokenBudget,
+          memoryConfig.singleMessageTokenBudget
+        ) as ChatMessage[];
         const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
 
         setupSSE(res);
@@ -446,12 +455,16 @@ async function buildChatContext(
   // ---- 层1：system prompt（先收集 personality/emotion，最终统一构建）----
 
   // ---- 层5：recent messages（短期上下文 — 最优先保留）----
-  const recentMessages = allMessages.slice(-recentLimit);
+  const recentMessages = fitRecentMessagesToBudget(
+    allMessages.slice(-recentLimit),
+    memoryConfig.recentTokenBudget,
+    memoryConfig.singleMessageTokenBudget
+  ) as ChatMessage[];
 
   // 如果没有 characterId，退化为纯短期模式
   if (!characterId) {
     const systemContent = buildSystemPrompt({ character });
-    return [{ role: 'system', content: systemContent }, ...recentMessages];
+    return finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]);
   }
 
   // 已用字符预算（由 memory + summary + personality 共享）
@@ -553,7 +566,8 @@ async function buildChatContext(
 
   // ---- 层3：summary block（追加到 system prompt 后）----
   if (summaryResult) {
-    const summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${summaryResult}\n`;
+    const compactSummary = trimToTokenBudget(summaryResult, memoryConfig.summaryTokenBudget);
+    const summaryBlock = `\n===== 用户画像（你对对方的了解） =====\n${compactSummary}\n`;
     usedChars += summaryBlock.length;
     systemContent += summaryBlock;
   }
@@ -576,16 +590,20 @@ async function buildChatContext(
     const memoryLines: string[] = [];
     const usedMemoryIds: number[] = [];
     const seenTexts = new Set<string>(); // 精确文本去重
+    let usedMemoryTokens = 0;
     for (const m of memories) {
       // 精确文本去重
       if (seenTexts.has(m.text)) continue;
       seenTexts.add(m.text);
 
       const line = `- ${m.text}`;
+      const lineTokens = estimateTokens(line);
       if (usedChars + line.length + 2 > maxContextChars) break;
+      if (usedMemoryTokens + lineTokens > memoryConfig.memoryTokenBudget) break;
       memoryLines.push(line);
       usedMemoryIds.push(m.id);
       usedChars += line.length + 1;
+      usedMemoryTokens += lineTokens;
     }
     if (memoryLines.length > 0) {
       memoryBlock = `\n===== 相关历史记忆（你们之前聊过的内容，可自然引用但不要刻意提起） =====\n${memoryLines.join('\n')}\n`;
@@ -598,7 +616,28 @@ async function buildChatContext(
   systemContent += memoryBlock;
   console.log(`[Perf] prompt 构建耗时: ${Date.now() - promptStart}ms`);
 
-  return [{ role: 'system', content: systemContent }, ...recentMessages];
+  return finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]);
+}
+
+function finalizeContext(messages: ChatMessage[]): ChatMessage[] {
+  if (totalMessageTokens(messages) <= memoryConfig.maxPromptTokens) return messages;
+
+  const [system, ...rest] = messages;
+  const systemBudget = Math.min(
+    memoryConfig.systemTokenBudget,
+    Math.max(600, memoryConfig.maxPromptTokens - memoryConfig.recentTokenBudget)
+  );
+  const compactSystem: ChatMessage = {
+    ...system,
+    content: trimToTokenBudget(system.content, systemBudget),
+  };
+  const recentBudget = Math.max(400, memoryConfig.maxPromptTokens - estimateTokens(compactSystem.content) - 16);
+  const compactRecent = fitRecentMessagesToBudget(
+    rest,
+    recentBudget,
+    memoryConfig.singleMessageTokenBudget
+  ) as ChatMessage[];
+  return [compactSystem, ...compactRecent];
 }
 
 // ========== 统一 system prompt 构建 ==========
@@ -755,7 +794,8 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
   const emotionRules = resolveEmotionHardRules(emotionMood, emotionBlock).map(rule => `- ${rule}`).join('\n');
 
   const blocks = [
-    `你是${character.name}，用户的恋人。`,
+    `你是${character.name}，默认身份认同是用户的对象/恋人。除非用户明确重新定义关系，否则不要把自己当普通朋友、客服或旁观者。`,
+    '其他印象只来自角色描述、长期特征、历史记忆和用户明确表达；不要凭空给用户添加设定。',
     '你必须严格按下面的性格规则说话，否则视为人设错误。',
     `【性格】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n硬规则：\n${personalityHardRules}\n口头片段（禁止逐字复读）：\n${personalityExamples}\n以上为语气锚点，必须按同类语气自然发挥。`,
     '性格优先级最高。情绪和关系只调语气强弱、主动程度和暧昧强度，不改说话方式。',

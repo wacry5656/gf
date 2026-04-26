@@ -56,6 +56,7 @@ db.exec(`
     embedding TEXT NOT NULL,
     importance INTEGER DEFAULT 1,
     memory_type TEXT DEFAULT 'other',
+    keywords TEXT DEFAULT '[]',
     is_active INTEGER DEFAULT 1,
     superseded_by INTEGER,
     hit_count INTEGER DEFAULT 0,
@@ -93,10 +94,10 @@ db.exec(`
     user_id INTEGER NOT NULL,
     character_id INTEGER NOT NULL,
     mood TEXT DEFAULT 'warm',
-    affection REAL DEFAULT 0.5,
-    trust_score REAL DEFAULT 0.5,
+    affection REAL DEFAULT 0.72,
+    trust_score REAL DEFAULT 0.62,
     jealousy_score REAL DEFAULT 0.0,
-    stability_score REAL DEFAULT 0.8,
+    stability_score REAL DEFAULT 0.72,
     last_trigger TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, character_id),
@@ -108,16 +109,26 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     character_id INTEGER NOT NULL,
-    closeness REAL DEFAULT 0.5,
-    trust REAL DEFAULT 0.5,
-    dependence REAL DEFAULT 0.3,
-    comfort_level REAL DEFAULT 0.5,
-    phase TEXT DEFAULT 'close',
+    closeness REAL DEFAULT 0.72,
+    trust REAL DEFAULT 0.62,
+    dependence REAL DEFAULT 0.64,
+    comfort_level REAL DEFAULT 0.74,
+    phase TEXT DEFAULT 'attached',
     last_event TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, character_id),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS embedding_cache (
+    cache_key TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    hit_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
   );
 `);
 
@@ -137,6 +148,7 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memories ADD COLUMN expires_at TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN relationship_subtype TEXT' },
   { sql: 'ALTER TABLE memories ADD COLUMN invalidation_reason TEXT' },
+  { sql: "ALTER TABLE memories ADD COLUMN keywords TEXT DEFAULT '[]'" },
 ];
 
 for (const m of migrations) {

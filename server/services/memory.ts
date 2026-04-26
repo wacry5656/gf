@@ -124,20 +124,63 @@ export async function addMemory(
   text: string,
   metadata: MemoryMetadata = {}
 ): Promise<void> {
+  await addMemoriesFromText(characterId, text, metadata);
+}
+
+export async function addMemoriesFromText(
+  characterId: number,
+  text: string,
+  metadata: MemoryMetadata = {}
+): Promise<void> {
+  const candidates = buildMemoryCandidates(text);
+  for (const candidate of candidates) {
+    await addSingleMemory(characterId, candidate, metadata);
+  }
+}
+
+function buildMemoryCandidates(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  const chunks = trimmed
+    .split(/[。！？!?；;\n]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const candidates = new Set<string>();
+  for (const chunk of chunks) {
+    if (shouldStoreAsMemory(chunk)) candidates.add(chunk);
+  }
+
+  if (candidates.size === 0 && shouldStoreAsMemory(trimmed)) {
+    candidates.add(trimmed);
+  }
+
+  return [...candidates].slice(0, 4);
+}
+
+async function addSingleMemory(
+  characterId: number,
+  text: string,
+  metadata: MemoryMetadata = {}
+): Promise<void> {
   try {
     // ---- 事实抽取 ----
     const { textForEmbed, normalizedFact, category: factCategory } = getTextForEmbedding(text);
+    // text 字段兼容旧逻辑（用于展示和检索退化）
+    const displayText = normalizedFact || text;
 
     const embedding = await getEmbedding(textForEmbed);
 
     // ---- 写入前去重 ----
-    const isDuplicate = checkDuplicate(characterId, embedding);
+    const isDuplicate = checkDuplicate(characterId, embedding, displayText);
     if (isDuplicate) return;
 
     // ---- 计算重要性 ----
     const importance = extractMemoryImportance(text);
     const bestCategory = factCategory !== 'general' ? factCategory : getBestCategory(text);
-    const enrichedMeta = { ...metadata, importance, category: bestCategory };
+    const keywords = extractMemoryKeywords(displayText, text);
+    const enrichedMeta = { ...metadata, importance, category: bestCategory, keywords };
 
     // ---- 自动分类 memory_type ----
     const memoryType: MemoryType = classifyMemoryType(text, normalizedFact);
@@ -149,9 +192,6 @@ export async function addMemory(
 
     const embeddingJson = JSON.stringify(embedding);
     const metadataJson = JSON.stringify(enrichedMeta);
-
-    // text 字段兼容旧逻辑（用于展示和检索退化）
-    const displayText = normalizedFact || text;
 
     // ---- 冲突检测 ----
     const conflict = detectMemoryConflict(characterId, text, normalizedFact, embedding, memoryType);
@@ -165,8 +205,8 @@ export async function addMemory(
     }
 
     const result = db.prepare(
-      'INSERT INTO memories (character_id, text, raw_text, normalized_fact_text, embedding, importance, memory_type, expires_at, relationship_subtype, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(characterId, displayText, text, normalizedFact, embeddingJson, importance, memoryType, expiresAt, relationshipSubtype, metadataJson);
+      'INSERT INTO memories (character_id, text, raw_text, normalized_fact_text, embedding, importance, memory_type, keywords, expires_at, relationship_subtype, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(characterId, displayText, text, normalizedFact, embeddingJson, importance, memoryType, JSON.stringify(keywords), expiresAt, relationshipSubtype, metadataJson);
 
     // ---- 冲突解决：将旧记忆标记为 inactive ----
     if (conflict.hasConflict) {
@@ -195,22 +235,80 @@ function getBestCategory(text: string): string {
  */
 function checkDuplicate(
   characterId: number,
-  newEmbedding: number[]
+  newEmbedding: number[],
+  newText: string,
 ): boolean {
   const threshold = memoryConfig.writeDedupThreshold;
   const recentRows = db
     .prepare(
-      'SELECT embedding FROM memories WHERE character_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 30'
+      'SELECT text, normalized_fact_text, embedding FROM memories WHERE character_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 30'
     )
-    .all(characterId) as Array<{ embedding: string }>;
+    .all(characterId) as Array<{ text: string; normalized_fact_text: string | null; embedding: string }>;
 
   for (const row of recentRows) {
+    const existingText = row.normalized_fact_text || row.text;
     const existing = JSON.parse(row.embedding) as number[];
     if (cosineSimilarity(newEmbedding, existing) > threshold) {
+      if (looksLikeReplacement(newText, existingText)) {
+        return false;
+      }
       return true;
     }
   }
   return false;
+}
+
+function looksLikeReplacement(newText: string, existingText: string): boolean {
+  if (newText === existingText) return false;
+
+  const newKey = normalizedMemoryKey(newText);
+  const oldKey = normalizedMemoryKey(existingText);
+  if (newKey && oldKey && newKey === oldKey) return true;
+
+  const positive = /(喜欢|爱|想要|接受|可以|愿意)/;
+  const negative = /(不喜欢|讨厌|不爱|受不了|不想|不接受|不愿意|害怕|最怕)/;
+  return (positive.test(existingText) && negative.test(newText)) ||
+    (negative.test(existingText) && positive.test(newText));
+}
+
+function normalizedMemoryKey(text: string): string | null {
+  const keyMatch = text.match(/^(用户(?:名字|年龄|星座\/生肖|职业|学校|大学|专业|所在地或老家|计划|喜欢|不喜欢|习惯)|用户在[^：:]{0,12}(?:工作|上班|实习|上学|读书))[:：]/);
+  if (keyMatch) return keyMatch[1].replace(/不喜欢/g, '喜欢');
+
+  const relationMatch = text.match(/^用户的(爸|妈|父亲|母亲|哥|姐|弟|妹|男朋友|女朋友|对象|前任)/);
+  if (relationMatch) return `用户的${relationMatch[1]}`;
+
+  return null;
+}
+
+export function extractMemoryKeywords(...texts: string[]): string[] {
+  const source = texts.join(' ').toLowerCase();
+  const tokens = new Set<string>();
+
+  const normalized = source
+    .replace(/[用户我你的她他是了呢啊呀哦嗯哈，。！？、；：,.!?;:"'()[\]{}【】（）]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const match of normalized.matchAll(/[a-z0-9_]{3,24}/g)) {
+    tokens.add(match[0]);
+  }
+
+  for (const phrase of source.matchAll(/[\u4e00-\u9fff]{2,8}/g)) {
+    const value = phrase[0];
+    if (!isStopKeyword(value)) tokens.add(value);
+  }
+
+  for (const explicit of source.matchAll(/(?:喜欢|不喜欢|讨厌|计划|打算|名字|生日|对象|女朋友|男朋友|老家|住在|工作|学校|专业|猫|狗|考试|面试|旅游|游戏|电影|火锅|咖啡|奶茶)[\u4e00-\u9fff]{0,8}/g)) {
+    const value = explicit[0];
+    if (value.length >= 2) tokens.add(value);
+  }
+
+  return [...tokens].sort((a, b) => b.length - a.length).slice(0, 12);
+}
+
+function isStopKeyword(value: string): boolean {
+  return /^(这个|那个|就是|然后|但是|因为|所以|如果|还是|可以|没有|不是|什么|怎么|觉得|感觉|今天|昨天|最近|一下|一点|真的|有点|比较|还是|时候)$/.test(value);
 }
 
 // ========== 检索记忆（多因素重排序） ==========
@@ -236,6 +334,7 @@ interface RawMemoryRow {
   embedding: string;
   importance: number;
   memory_type: string;
+  keywords: string | null;
   relationship_subtype: string | null;
   invalidation_reason: string | null;
   hit_count: number;
@@ -257,11 +356,13 @@ export async function searchMemory(
   const threshold = memoryConfig.recallThreshold;
 
   try {
+    ensureMemoryKeywords(characterId);
     const queryEmbedding = await getEmbedding(query);
+    const queryKeywords = extractMemoryKeywords(query);
 
     const rows = db
       .prepare(
-        'SELECT id, text, raw_text, normalized_fact_text, embedding, importance, memory_type, relationship_subtype, invalidation_reason, hit_count, last_hit_at, metadata, created_at FROM memories WHERE character_id = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > datetime(\'now\')) ORDER BY created_at DESC'
+        'SELECT id, text, raw_text, normalized_fact_text, embedding, importance, memory_type, keywords, relationship_subtype, invalidation_reason, hit_count, last_hit_at, metadata, created_at FROM memories WHERE character_id = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > datetime(\'now\')) ORDER BY created_at DESC'
       )
       .all(characterId) as RawMemoryRow[];
 
@@ -272,10 +373,15 @@ export async function searchMemory(
       .map((row) => {
         const emb = JSON.parse(row.embedding) as number[];
         const semantic = cosineSimilarity(queryEmbedding, emb);
-        return { ...row, semantic, emb };
+        const keywordScore = calculateKeywordScore(queryKeywords, parseKeywords(row.keywords));
+        return { ...row, semantic, keywordScore, emb };
       })
-      .filter((item) => item.semantic > threshold)
-      .sort((a, b) => b.semantic - a.semantic)
+      .filter((item) =>
+        item.semantic > threshold ||
+        item.keywordScore >= memoryConfig.keywordRecallThreshold ||
+        (item.importance >= 5 && item.keywordScore > 0)
+      )
+      .sort((a, b) => (b.semantic + b.keywordScore) - (a.semantic + a.keywordScore))
       .slice(0, maxCandidates);
 
     if (candidates.length === 0) return [];
@@ -293,12 +399,99 @@ export async function searchMemory(
   }
 }
 
+export function getCoreMemories(characterId: number, limit = memoryConfig.coreMemoryLimit): MemoryResult[] {
+  ensureMemoryKeywords(characterId);
+  const rows = db.prepare(
+    `SELECT id, text, raw_text, normalized_fact_text, importance, memory_type, hit_count, created_at
+     FROM memories
+     WHERE character_id = ?
+       AND is_active = 1
+       AND (expires_at IS NULL OR expires_at > datetime('now'))
+       AND (
+         importance >= 4
+         OR memory_type IN ('fact', 'relationship')
+         OR (memory_type = 'preference' AND importance >= 3)
+       )
+     ORDER BY importance DESC, hit_count DESC, created_at DESC
+     LIMIT ?`
+  ).all(characterId, limit) as Array<{
+    id: number;
+    text: string;
+    raw_text: string | null;
+    normalized_fact_text: string | null;
+    importance: number;
+    memory_type: string;
+    hit_count: number;
+    created_at: string;
+  }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    text: row.normalized_fact_text || row.text,
+    rawText: row.raw_text || row.text,
+    score: 1,
+    semantic: 0,
+    importance: row.importance || 1,
+    memoryType: row.memory_type || 'other',
+    hitCount: row.hit_count || 0,
+    createdAt: row.created_at,
+  }));
+}
+
+function ensureMemoryKeywords(characterId: number): void {
+  const rows = db.prepare(
+    `SELECT id, text, raw_text, normalized_fact_text
+     FROM memories
+     WHERE character_id = ?
+       AND is_active = 1
+       AND (keywords IS NULL OR keywords = '' OR keywords = '[]')
+     LIMIT 60`,
+  ).all(characterId) as Array<{ id: number; text: string; raw_text: string | null; normalized_fact_text: string | null }>;
+
+  if (rows.length === 0) return;
+  const stmt = db.prepare("UPDATE memories SET keywords = ?, updated_at = datetime('now') WHERE id = ?");
+  for (const row of rows) {
+    const keywords = extractMemoryKeywords(row.normalized_fact_text || row.text, row.raw_text || '');
+    stmt.run(JSON.stringify(keywords), row.id);
+  }
+}
+
+function parseKeywords(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function calculateKeywordScore(queryKeywords: string[], memoryKeywords: string[]): number {
+  if (queryKeywords.length === 0 || memoryKeywords.length === 0) return 0;
+
+  let score = 0;
+  const memorySet = new Set(memoryKeywords);
+  for (const keyword of queryKeywords) {
+    if (memorySet.has(keyword)) {
+      score += keyword.length >= 4 ? 0.35 : 0.22;
+      continue;
+    }
+
+    if (memoryKeywords.some((candidate) => candidate.includes(keyword) || keyword.includes(candidate))) {
+      score += 0.16;
+    }
+  }
+
+  return Math.min(1, score);
+}
+
 interface ScoredCandidate {
   id: number;
   text: string;
   raw_text: string | null;
   normalized_fact_text: string | null;
   semantic: number;
+  keywordScore: number;
   importance: number;
   memory_type: string;
   relationship_subtype: string | null;
@@ -317,6 +510,7 @@ function rerankMemoryResults(candidates: ScoredCandidate[]): MemoryResult[] {
   const iw = memoryConfig.importanceWeight;
   const rw = memoryConfig.recencyWeight;
   const uw = memoryConfig.usageWeight;
+  const kw = memoryConfig.keywordWeight;
   const now = Date.now();
 
   return candidates.map((c) => {
@@ -345,6 +539,7 @@ function rerankMemoryResults(candidates: ScoredCandidate[]): MemoryResult[] {
 
     const finalScore =
       (semanticScore * sw +
+        c.keywordScore * kw +
         importanceScore * iw +
         recencyScore * rw +
         usageScore * uw) *
@@ -357,6 +552,7 @@ function rerankMemoryResults(candidates: ScoredCandidate[]): MemoryResult[] {
       relationshipSubtype: c.relationship_subtype || null,
       invalidationReason: c.invalidation_reason || null,
       semanticScore,
+      keywordScore: c.keywordScore,
       importanceScore,
       recencyScore,
       usageScore,
