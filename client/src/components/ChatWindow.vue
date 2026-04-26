@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted } from 'vue'
-import type { Character, ChatMessage } from '../api'
-import { sendMessageStream, saveMessage, clearMessages, getEmotion, getRelationship, StreamChatError } from '../api'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import type { Character, ChatMessage, EmotionInfo, RelationshipInfo } from '../api'
+import { clearMessages, getEmotion, getRelationship, saveMessage, sendMessageStream, StreamChatError } from '../api'
 
 const props = defineProps<{
   character: Character
@@ -18,27 +18,46 @@ const loading = ref(false)
 const streaming = ref(false)
 const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
-const moodLabel = ref('')
-const phaseLabel = ref('')
+const emotionInfo = ref<EmotionInfo | null>(null)
+const relationshipInfo = ref<RelationshipInfo | null>(null)
+
+const moodLabel = computed(() => emotionInfo.value?.moodLabel || '温柔')
+const phaseLabel = computed(() => relationshipInfo.value?.phaseLabel || '亲近')
+
+const relationshipHint = computed(() => {
+  const phase = relationshipInfo.value?.phase
+  if (phase === 'deep_attached') return '默认恋人关系明确，回应会更主动、更依赖。'
+  if (phase === 'strained') return '关系有点别扭，但默认身份仍是你的对象。'
+  return '默认身份是你的对象/恋人，会按你们的互动继续升温。'
+})
+
+const statusItems = computed(() => {
+  const emotion = emotionInfo.value
+  const relationship = relationshipInfo.value
+  return [
+    { label: '好感', value: emotion?.affection ?? 0.72, tone: 'rose' },
+    { label: '信任', value: emotion?.trust_score ?? relationship?.trust ?? 0.62, tone: 'blue' },
+    { label: '亲近', value: relationship?.closeness ?? 0.72, tone: 'violet' },
+    { label: '依赖', value: relationship?.dependence ?? 0.64, tone: 'green' },
+    { label: '安心', value: relationship?.comfort_level ?? 0.74, tone: 'amber' },
+    { label: '吃醋', value: emotion?.jealousy_score ?? 0, tone: 'slate' },
+  ]
+})
 
 async function fetchEmotion() {
   if (!props.character?.id || !props.userId) {
-    moodLabel.value = ''
+    emotionInfo.value = null
     return
   }
-  const info = await getEmotion(props.character.id, props.userId)
-  if (info) moodLabel.value = info.moodLabel
-  else moodLabel.value = ''
+  emotionInfo.value = await getEmotion(props.character.id, props.userId)
 }
 
 async function fetchRelationship() {
   if (!props.character?.id || !props.userId) {
-    phaseLabel.value = ''
+    relationshipInfo.value = null
     return
   }
-  const info = await getRelationship(props.character.id, props.userId)
-  if (info) phaseLabel.value = info.phaseLabel
-  else phaseLabel.value = ''
+  relationshipInfo.value = await getRelationship(props.character.id, props.userId)
 }
 
 async function fetchStatus() {
@@ -72,7 +91,6 @@ async function send() {
   loading.value = true
   streaming.value = false
 
-  // 保存用户消息到数据库
   if (props.character.id) {
     saveMessage(props.character.id, 'user', text, props.userId).catch((e) => {
       console.error('[ChatWindow] 保存用户消息失败:', e)
@@ -83,30 +101,21 @@ async function send() {
 
   try {
     let streamContent = ''
-
     const replies = await sendMessageStream(
       props.character,
       updated,
       (delta) => {
-        if (!streaming.value) {
-          // First chunk: switch from "思考中..." to streaming display
-          streaming.value = true
-        }
+        if (!streaming.value) streaming.value = true
         streamContent += delta
-        emit('update:messages', [
-          ...updated,
-          { role: 'assistant', content: streamContent }
-        ])
+        emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
         scrollToBottom()
       },
       props.userId,
       () => {
-        // onReady: connection established, don't show error yet
         connected = true
-      }
+      },
     )
 
-    // Replace streaming message with cleaned/split replies
     if (replies.length > 0) {
       const finalMessages = [...updated]
       for (const reply of replies) {
@@ -114,11 +123,8 @@ async function send() {
       }
       emit('update:messages', finalMessages)
     } else if (streamContent) {
-      // Fallback: no split replies received, use raw stream content
       emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
     }
-    // AI 回复由服务端兜底保存，前端不再重复保存
-    // 刷新情绪和关系标签
     fetchStatus()
   } catch (e: any) {
     if (e instanceof StreamChatError) {
@@ -142,6 +148,7 @@ async function onClearHistory() {
   try {
     await clearMessages(props.character.id, props.userId)
     emit('update:messages', [])
+    fetchStatus()
   } catch (e) {
     console.error('[ChatWindow] 清空聊天记录失败:', e)
     error.value = '清空失败'
@@ -157,141 +164,319 @@ function handleKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="chat-container">
-    <div class="chat-info">
-      正在与「<strong>{{ character.name }}</strong>」聊天
-      <span v-if="moodLabel" class="emotion-tag">{{ moodLabel }}</span>
-      <span v-if="phaseLabel" class="relation-tag">{{ phaseLabel }}</span>
-      <span class="chat-personality">— {{ character.personality }}</span>
-      <button v-if="messages.length > 0" class="btn-clear" @click="onClearHistory">清空记录</button>
-    </div>
-
-    <div class="chat-body" ref="chatBody">
-      <div v-if="messages.length === 0" class="chat-empty">
-        发送消息开始和「{{ character.name }}」聊天吧 ✨
+  <div class="chat-shell">
+    <aside class="companion-panel">
+      <div class="portrait">
+        <div class="portrait-glow"></div>
+        <div class="portrait-initial">{{ character.name.slice(0, 1) }}</div>
       </div>
 
-      <div
-        v-for="(msg, i) in messages"
-        :key="i"
-        :class="[
-          'message',
-          msg.role === 'user' ? 'message-user' : 'message-assistant',
-          i > 0 && messages[i - 1].role === msg.role ? 'message-consecutive' : ''
-        ]"
-      >
-        <div v-if="!(i > 0 && messages[i - 1].role === msg.role)" class="message-label">
-          {{ msg.role === 'user' ? '你' : character.name }}
+      <div class="identity-block">
+        <div class="identity-kicker">当前对象</div>
+        <h2>{{ character.name }}</h2>
+        <p>{{ character.personality }}</p>
+      </div>
+
+      <div class="state-list">
+        <div class="state-row" v-for="item in statusItems" :key="item.label">
+          <div class="state-meta">
+            <span>{{ item.label }}</span>
+            <strong>{{ Math.round(item.value * 100) }}</strong>
+          </div>
+          <div class="state-track">
+            <div class="state-fill" :class="`tone-${item.tone}`" :style="{ width: `${Math.round(item.value * 100)}%` }"></div>
+          </div>
         </div>
-        <div class="message-bubble">{{ msg.content }}</div>
       </div>
 
-      <div v-if="loading && !streaming" class="message message-assistant">
-        <div class="message-label">{{ character.name }}</div>
-        <div class="message-bubble typing">思考中...</div>
+      <div class="relationship-note">
+        <span>{{ moodLabel }}</span>
+        <span>{{ phaseLabel }}</span>
+        <p>{{ relationshipHint }}</p>
       </div>
-    </div>
+    </aside>
 
-    <div v-if="error" class="chat-error">{{ error }}</div>
+    <section class="conversation">
+      <header class="conversation-header">
+        <div>
+          <div class="header-kicker">正在聊天</div>
+          <h1>{{ character.name }}</h1>
+        </div>
+        <div class="header-actions">
+          <button v-if="messages.length > 0" class="tool-button" @click="onClearHistory">清空记录</button>
+        </div>
+      </header>
 
-    <div class="chat-input-bar">
-      <textarea
-        v-model="inputText"
-        @keydown="handleKeydown"
-        placeholder="输入消息... (Enter 发送)"
-        rows="1"
-        :disabled="loading"
-      ></textarea>
-      <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
-        {{ loading ? '...' : '发送' }}
-      </button>
-    </div>
+      <div class="chat-body" ref="chatBody">
+        <div v-if="messages.length === 0" class="empty-state">
+          <div class="empty-title">对话还没有开始</div>
+          <div class="empty-copy">她默认认同自己是你的对象。发一句话，她会按你们的记忆、关系和情绪继续回应。</div>
+        </div>
+
+        <div
+          v-for="(msg, i) in messages"
+          :key="i"
+          :class="[
+            'message',
+            msg.role === 'user' ? 'message-user' : 'message-assistant',
+            i > 0 && messages[i - 1].role === msg.role ? 'message-consecutive' : ''
+          ]"
+        >
+          <div v-if="!(i > 0 && messages[i - 1].role === msg.role)" class="message-label">
+            {{ msg.role === 'user' ? '你' : character.name }}
+          </div>
+          <div class="message-bubble">{{ msg.content }}</div>
+        </div>
+
+        <div v-if="loading && !streaming" class="message message-assistant">
+          <div class="message-label">{{ character.name }}</div>
+          <div class="message-bubble typing">正在想怎么回你...</div>
+        </div>
+      </div>
+
+      <div v-if="error" class="chat-error">{{ error }}</div>
+
+      <footer class="composer">
+        <textarea
+          v-model="inputText"
+          @keydown="handleKeydown"
+          placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+          rows="1"
+          :disabled="loading"
+        ></textarea>
+        <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
+          {{ loading ? '发送中' : '发送' }}
+        </button>
+      </footer>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.chat-container {
+.chat-shell {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: #f0f2f5;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  background: #eef1f4;
   overflow: hidden;
 }
 
-.chat-info {
-  padding: 10px 20px;
+.companion-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
   background: #fff;
-  border-bottom: 1px solid #e8e8e8;
-  font-size: 0.85rem;
-  color: #555;
-  flex-shrink: 0;
+  border-right: 1px solid #dde3ec;
+  overflow-y: auto;
+}
+
+.portrait {
+  position: relative;
+  width: 148px;
+  aspect-ratio: 1;
+  margin: 4px auto 0;
+  display: grid;
+  place-items: center;
+}
+
+.portrait-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 28% 24%, rgba(255, 116, 150, 0.32), transparent 34%),
+    radial-gradient(circle at 78% 68%, rgba(92, 111, 255, 0.26), transparent 38%),
+    linear-gradient(135deg, #fff7fb, #edf4ff);
+  border: 1px solid rgba(170, 183, 205, 0.55);
+}
+
+.portrait-initial {
+  position: relative;
+  width: 84px;
+  aspect-ratio: 1;
+  border-radius: 24px;
+  display: grid;
+  place-items: center;
+  background: #172033;
+  color: #fff;
+  font-size: 2rem;
+  font-weight: 800;
+  box-shadow: 0 18px 32px rgba(23, 32, 51, 0.22);
+}
+
+.identity-block {
+  text-align: center;
+}
+
+.identity-kicker,
+.header-kicker {
+  font-size: 0.75rem;
+  color: #7c8798;
+}
+
+.identity-block h2,
+.conversation-header h1 {
+  margin: 4px 0 0;
+  color: #172033;
+  font-size: 1.35rem;
+  letter-spacing: 0;
+}
+
+.identity-block p {
+  margin: 8px 0 0;
+  color: #667085;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.state-list {
+  display: grid;
+  gap: 14px;
+}
+
+.state-row {
+  min-width: 0;
+}
+
+.state-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  color: #344054;
+  font-size: 0.82rem;
+}
+
+.state-meta strong {
+  font-size: 0.82rem;
+  color: #172033;
+}
+
+.state-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e8edf3;
+  overflow: hidden;
+}
+
+.state-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.25s ease;
+}
+
+.tone-rose { background: #e95f80; }
+.tone-blue { background: #4b7bec; }
+.tone-violet { background: #7c5cff; }
+.tone-green { background: #35a66f; }
+.tone-amber { background: #d99328; }
+.tone-slate { background: #64748b; }
+
+.relationship-note {
+  border: 1px solid #e3e8ef;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f8fafc;
+}
+
+.relationship-note span {
+  display: inline-flex;
+  margin: 0 6px 8px 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #fff;
+  color: #344054;
+  border: 1px solid #e3e8ef;
+  font-size: 0.76rem;
+}
+
+.relationship-note p {
+  margin: 0;
+  color: #667085;
+  line-height: 1.5;
+  font-size: 0.84rem;
+}
+
+.conversation {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(244, 247, 251, 0.96)),
+    #f5f7fa;
+}
+
+.conversation-header {
+  min-height: 72px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid #dde3ec;
+  flex-shrink: 0;
 }
 
-.chat-personality {
-  color: #999;
-  flex: 1;
+.header-actions {
+  display: flex;
+  gap: 8px;
 }
 
-.emotion-tag {
-  display: inline-block;
-  background: #f3f0ff;
-  color: #6c63ff;
-  font-size: 0.75rem;
-  padding: 2px 8px;
-  border-radius: 10px;
-  margin-left: 8px;
-}
-
-.relation-tag {
-  display: inline-block;
-  background: #fff0f6;
-  color: #e91e8c;
-  font-size: 0.75rem;
-  padding: 2px 8px;
-  border-radius: 10px;
-  margin-left: 4px;
-}
-
-.btn-clear {
-  background: none;
-  border: 1px solid #ddd;
-  color: #999;
-  padding: 3px 10px;
-  border-radius: 4px;
-  font-size: 0.75rem;
+.tool-button {
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid #d4dbe7;
+  border-radius: 8px;
+  background: #fff;
+  color: #667085;
   cursor: pointer;
-  margin-left: auto;
+  font-size: 0.82rem;
 }
 
-.btn-clear:hover {
-  color: #e53935;
-  border-color: #e53935;
+.tool-button:hover {
+  color: #d92d20;
+  border-color: #f1a6a0;
 }
 
 .chat-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.chat-empty {
+.empty-state {
+  align-self: center;
+  margin-top: 20vh;
+  max-width: 420px;
   text-align: center;
-  color: #aaa;
-  margin-top: 60px;
-  font-size: 0.95rem;
+  color: #667085;
+}
+
+.empty-title {
+  color: #172033;
+  font-weight: 700;
+  font-size: 1rem;
+  margin-bottom: 8px;
+}
+
+.empty-copy {
+  line-height: 1.6;
+  font-size: 0.92rem;
 }
 
 .message {
-  max-width: 75%;
+  max-width: min(620px, 76%);
 }
 
 .message-consecutive {
-  margin-top: -8px;
+  margin-top: -6px;
 }
 
 .message-user {
@@ -304,8 +489,8 @@ function handleKeydown(e: KeyboardEvent) {
 
 .message-label {
   font-size: 0.75rem;
-  color: #888;
-  margin-bottom: 4px;
+  color: #8b95a5;
+  margin-bottom: 5px;
   padding: 0 4px;
 }
 
@@ -314,89 +499,111 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 .message-bubble {
-  padding: 10px 14px;
-  border-radius: 12px;
-  font-size: 0.95rem;
-  line-height: 1.5;
+  padding: 11px 14px;
+  border-radius: 14px;
+  font-size: 0.96rem;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+  border: 1px solid transparent;
 }
 
 .message-user .message-bubble {
-  background: #6c63ff;
+  background: #25324a;
   color: #fff;
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 5px;
 }
 
 .message-assistant .message-bubble {
   background: #fff;
-  color: #333;
-  border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  color: #1d2939;
+  border-color: #e3e8ef;
+  border-bottom-left-radius: 5px;
+  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.06);
 }
 
 .typing {
-  color: #999;
-  animation: blink 1s infinite;
-}
-
-@keyframes blink {
-  50% { opacity: 0.5; }
+  color: #8b95a5;
 }
 
 .chat-error {
-  padding: 8px 20px;
-  background: #fff0f0;
-  color: #d32f2f;
-  font-size: 0.85rem;
-  flex-shrink: 0;
-}
-
-.chat-input-bar {
-  display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  background: #fff;
-  border-top: 1px solid #e8e8e8;
-  flex-shrink: 0;
-}
-
-.chat-input-bar textarea {
-  flex: 1;
-  padding: 10px 14px;
-  border: 1px solid #ddd;
+  margin: 0 24px 12px;
+  padding: 9px 12px;
   border-radius: 8px;
-  font-size: 0.95rem;
-  resize: none;
-  font-family: inherit;
-  min-height: 40px;
-  max-height: 100px;
-  box-sizing: border-box;
+  background: #fff1f0;
+  color: #b42318;
+  border: 1px solid #ffd3cc;
+  font-size: 0.86rem;
+  flex-shrink: 0;
 }
 
-.chat-input-bar textarea:focus {
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 10px;
+  padding: 14px 18px 16px;
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid #dde3ec;
+  flex-shrink: 0;
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 42px;
+  max-height: 108px;
+  padding: 11px 13px;
+  border: 1px solid #d4dbe7;
+  border-radius: 8px;
+  resize: none;
+  color: #172033;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  font-family: inherit;
+  box-sizing: border-box;
+  background: #fff;
+}
+
+.composer textarea:focus {
   outline: none;
-  border-color: #6c63ff;
+  border-color: #7c8db5;
+  box-shadow: 0 0 0 3px rgba(124, 141, 181, 0.16);
 }
 
 .btn-send {
-  padding: 10px 20px;
-  background: #6c63ff;
-  color: #fff;
+  height: 42px;
   border: none;
   border-radius: 8px;
+  background: #7c5cff;
+  color: #fff;
   font-size: 0.95rem;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
-  white-space: nowrap;
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #5a52d9;
+  background: #6848ee;
 }
 
 .btn-send:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+}
+
+@media (max-width: 860px) {
+  .chat-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .companion-panel {
+    display: none;
+  }
+
+  .conversation-header {
+    min-height: 64px;
+  }
+
+  .message {
+    max-width: 88%;
+  }
 }
 </style>

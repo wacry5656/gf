@@ -272,6 +272,8 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
         phaseLabel: PHASE_LABEL['attached'],
         closeness: 0.72,
         trust: 0.62,
+        dependence: 0.64,
+        comfort_level: 0.74,
       });
       return;
     }
@@ -281,6 +283,8 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
       phaseLabel: PHASE_LABEL[(state.phase as RelationshipPhase) || 'close'],
       closeness: state.closeness,
       trust: state.trust,
+      dependence: state.dependence,
+      comfort_level: state.comfort_level,
     });
   } catch (err: any) {
     console.error('Get relationship error:', err?.message);

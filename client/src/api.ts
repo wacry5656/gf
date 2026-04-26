@@ -329,6 +329,8 @@ export interface RelationshipInfo {
   phaseLabel: string;
   closeness: number;
   trust: number;
+  dependence: number;
+  comfort_level: number;
 }
 
 export async function getRelationship(characterId: number, userId: number): Promise<RelationshipInfo | null> {

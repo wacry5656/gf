@@ -170,14 +170,12 @@ function goBack() {
 
 <style scoped>
 .app-container {
-  width: min(1120px, 100vw);
-  margin: 0 auto;
+  width: 100vw;
+  margin: 0;
   height: 100vh;
   display: flex;
   flex-direction: column;
   background: #eef1f4;
-  border-left: 1px solid #dfe4ea;
-  border-right: 1px solid #dfe4ea;
 }
 
 .app-header {
