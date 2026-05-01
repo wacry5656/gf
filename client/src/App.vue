@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import type { Character, ChatMessage, User } from './api'
 import { getCharacters, createCharacter, deleteCharacter, getMessages } from './api'
-import { getCurrentUser, saveUser, clearUser } from './userSession'
+import { getCurrentUser, saveUser, clearUser, getActiveCharacterId, saveActiveCharacterId, clearActiveCharacterId } from './userSession'
 import LoginPage from './components/LoginPage.vue'
 import CharacterSetup from './components/CharacterSetup.vue'
 import ChatWindow from './components/ChatWindow.vue'
@@ -16,6 +16,7 @@ const loading = ref(false)
 const appError = ref('')
 const creatingCharacter = ref(false)
 const deletingCharacterId = ref<number | null>(null)
+let activeCharacterRequestId = 0
 
 // 初始化：检查本地存储的登录信息
 onMounted(() => {
@@ -34,12 +35,14 @@ function onLogin(u: User) {
 }
 
 function resetSession(message = '') {
+  activeCharacterRequestId += 1
   user.value = null
   activeCharacter.value = null
   chatMessages.value = []
   characters.value = []
   showNewCharacter.value = false
   clearUser()
+  clearActiveCharacterId()
   appError.value = message
 }
 
@@ -56,7 +59,9 @@ async function loadCharacters() {
   if (!user.value) return
   loading.value = true
   try {
-    characters.value = await getCharacters(user.value.userId)
+    const nextCharacters = await getCharacters(user.value.userId)
+    characters.value = nextCharacters
+    await restoreActiveCharacter(nextCharacters)
     appError.value = ''
   } catch (e: any) {
     console.error(e)
@@ -68,6 +73,30 @@ async function loadCharacters() {
   } finally {
     loading.value = false
   }
+}
+
+async function restoreActiveCharacter(nextCharacters: Character[]) {
+  if (!user.value) return
+
+  const preferredCharacterId = activeCharacter.value?.id || getActiveCharacterId()
+  if (!preferredCharacterId) return
+
+  const matchedCharacter = nextCharacters.find((char) => char.id === preferredCharacterId)
+  if (!matchedCharacter) {
+    if (activeCharacter.value?.id === preferredCharacterId) {
+      activeCharacter.value = null
+      chatMessages.value = []
+    }
+    clearActiveCharacterId()
+    return
+  }
+
+  if (activeCharacter.value?.id === matchedCharacter.id) {
+    activeCharacter.value = matchedCharacter
+    return
+  }
+
+  await selectCharacter(matchedCharacter, { persistSelection: false })
 }
 
 async function onCharacterConfirm(char: Character) {
@@ -92,13 +121,23 @@ async function onCharacterConfirm(char: Character) {
   }
 }
 
-async function selectCharacter(char: Character) {
+async function selectCharacter(char: Character, options: { persistSelection?: boolean } = {}) {
+  const { persistSelection = true } = options
+  const requestId = ++activeCharacterRequestId
   activeCharacter.value = char
+  if (persistSelection && char.id) {
+    saveActiveCharacterId(char.id)
+  }
   chatMessages.value = []
   if (char.id && user.value) {
+    const selectedUserId = user.value.userId
     try {
-      chatMessages.value = await getMessages(char.id, user.value.userId)
+      const messages = await getMessages(char.id, selectedUserId)
+      if (requestId !== activeCharacterRequestId) return
+      if (activeCharacter.value?.id !== char.id || user.value?.userId !== selectedUserId) return
+      chatMessages.value = messages
     } catch (e: any) {
+      if (requestId !== activeCharacterRequestId) return
       console.error('[App] 加载历史消息失败:', e)
       if (isExpiredLoginError(e)) {
         resetSession('本地登录已失效，请重新登录。')
@@ -121,6 +160,7 @@ async function onDeleteCharacter(char: Character) {
     if (activeCharacter.value?.id === char.id) {
       activeCharacter.value = null
       chatMessages.value = []
+      clearActiveCharacterId()
     }
     await loadCharacters()
   } catch (e: any) {
@@ -136,8 +176,10 @@ async function onDeleteCharacter(char: Character) {
 }
 
 function goBack() {
+  activeCharacterRequestId += 1
   activeCharacter.value = null
   chatMessages.value = []
+  clearActiveCharacterId()
 }
 
 function displayPersonality(raw: string): string {

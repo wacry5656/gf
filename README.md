@@ -80,6 +80,16 @@ npm start
 
 访问 `http://localhost:3000`。
 
+### 5. 回归测试
+
+```bash
+# 聊天链路回归（assistant 持久化、低信息消息 prompt、清洗回退）
+npm run test:chat
+
+# 后端全部回归
+npm run test:server
+```
+
 ## 部署到 Linux VPS
 
 ### 使用 Node.js 直接部署

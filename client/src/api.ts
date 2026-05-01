@@ -65,6 +65,110 @@ export class StreamChatError extends Error {
 }
 
 const API_BASE = '/api';
+let preferredApiOrigin: string | null = null;
+
+function isAbsoluteUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input);
+}
+
+function isLocalRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname);
+}
+
+function getApiRequestCandidates(input: string): string[] {
+  if (isAbsoluteUrl(input) || typeof window === 'undefined') {
+    return [input];
+  }
+
+  const candidates: string[] = [];
+
+  if (preferredApiOrigin) {
+    candidates.push(new URL(input, preferredApiOrigin).toString());
+  }
+
+  candidates.push(input);
+
+  const configuredTarget = import.meta.env.VITE_DEV_API_TARGET;
+  if (configuredTarget) {
+    candidates.push(new URL(input, configuredTarget).toString());
+  }
+
+  if (isLocalRuntime()) {
+    const localOrigins = [
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:3002',
+      'http://localhost:3000',
+      'http://localhost:3002',
+    ];
+    for (const origin of localOrigins) {
+      candidates.push(new URL(input, origin).toString());
+    }
+  }
+
+  return Array.from(new Set(candidates));
+}
+
+function isNetworkFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes('failed to fetch') || message.includes('networkerror') || message.includes('load failed');
+}
+
+function getApiUnavailableMessage(action: string): string {
+  return `${action}：无法连接到后端服务，请确认后端已启动，并检查 /api 代理或端口配置。`;
+}
+
+async function fetchApi(input: string, init: RequestInit | undefined, action: string): Promise<Response> {
+  let lastNetworkError: unknown = null;
+
+  for (const candidate of getApiRequestCandidates(input)) {
+    try {
+      const response = await fetch(candidate, init);
+      if (isAbsoluteUrl(candidate)) {
+        preferredApiOrigin = new URL(candidate).origin;
+      } else if (typeof window !== 'undefined') {
+        preferredApiOrigin = window.location.origin;
+      }
+      return response;
+    } catch (error) {
+      if (isNetworkFetchError(error)) {
+        if (preferredApiOrigin && isAbsoluteUrl(candidate)) {
+          try {
+            if (new URL(candidate).origin === preferredApiOrigin) {
+              preferredApiOrigin = null;
+            }
+          } catch {
+            preferredApiOrigin = null;
+          }
+        }
+        lastNetworkError = error;
+        continue;
+      }
+
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(`${action}失败，请稍后重试`);
+    }
+  }
+
+  if (lastNetworkError) {
+    throw new Error(getApiUnavailableMessage(action));
+  }
+
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    if (isNetworkFetchError(error)) {
+      throw new Error(getApiUnavailableMessage(action));
+    }
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error(`${action}失败，请稍后重试`);
+  }
+}
 
 function parseJsonText(text: string): unknown {
   if (!text || text.trim() === '') return null;
@@ -168,11 +272,11 @@ function getInterruptedStreamError(
 // ====== 认证 ======
 
 export async function register(username: string, password: string): Promise<User> {
-  const res = await fetch(`${API_BASE}/auth/register`, {
+  const res = await fetchApi(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
-  });
+  }, '注册失败');
   const data = await readJsonApiResponse<AuthResponsePayload>(
     res,
     '注册失败，请稍后重试',
@@ -186,11 +290,11 @@ export async function register(username: string, password: string): Promise<User
 }
 
 export async function login(username: string, password: string): Promise<User> {
-  const res = await fetch(`${API_BASE}/auth/login`, {
+  const res = await fetchApi(`${API_BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
-  });
+  }, '登录失败');
   const data = await readJsonApiResponse<AuthResponsePayload>(
     res,
     '登录失败，请稍后重试',
@@ -210,11 +314,11 @@ export async function sendMessage(
   messages: ChatMessage[],
   userId: number
 ): Promise<string[]> {
-  const res = await fetch('/api/chat', {
+  const res = await fetchApi('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ character, messages, characterId: character.id, userId }),
-  });
+  }, '发送消息失败');
   const data = await readJsonApiResponse<ChatResponsePayload>(
     res,
     `请求失败 (${res.status})`,
@@ -227,7 +331,7 @@ export async function sendMessage(
 // ====== 角色数据 ======
 
 export async function getCharacters(userId: number): Promise<Character[]> {
-  const res = await fetch(`/api/data/characters?userId=${userId}`);
+  const res = await fetchApi(`/api/data/characters?userId=${userId}`, undefined, '获取角色失败');
   const data = await readJsonApiResponse<CharactersResponsePayload>(
     res,
     '获取角色失败',
@@ -238,11 +342,11 @@ export async function getCharacters(userId: number): Promise<Character[]> {
 }
 
 export async function createCharacter(userId: number, char: Character): Promise<number> {
-  const res = await fetch('/api/data/characters', {
+  const res = await fetchApi('/api/data/characters', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, ...char }),
-  });
+  }, '创建角色失败');
   const data = await readJsonApiResponse<CharacterMutationPayload>(
     res,
     '创建角色失败',
@@ -254,7 +358,11 @@ export async function createCharacter(userId: number, char: Character): Promise<
 }
 
 export async function deleteCharacter(characterId: number, userId: number): Promise<void> {
-  const res = await fetch(`/api/data/characters/${characterId}?userId=${userId}`, { method: 'DELETE' });
+  const res = await fetchApi(
+    `/api/data/characters/${characterId}?userId=${userId}`,
+    { method: 'DELETE' },
+    '删除角色失败'
+  );
   const data = await readJsonApiResponse<ApiStatusPayload>(
     res,
     '删除角色失败',
@@ -266,7 +374,7 @@ export async function deleteCharacter(characterId: number, userId: number): Prom
 // ====== 聊天记录 ======
 
 export async function getMessages(characterId: number, userId: number): Promise<ChatMessage[]> {
-  const res = await fetch(`/api/data/messages/${characterId}?userId=${userId}`);
+  const res = await fetchApi(`/api/data/messages/${characterId}?userId=${userId}`, undefined, '获取消息失败');
   const data = await readJsonApiResponse<MessagesResponsePayload>(
     res,
     '获取消息失败',
@@ -277,11 +385,11 @@ export async function getMessages(characterId: number, userId: number): Promise<
 }
 
 export async function saveMessage(characterId: number, role: string, content: string, userId: number): Promise<void> {
-  const res = await fetch('/api/data/messages', {
+  const res = await fetchApi('/api/data/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ characterId, role, content, userId }),
-  });
+  }, '保存消息失败');
   const data = await readJsonApiResponse<ApiStatusPayload>(
     res,
     '保存消息失败',
@@ -291,7 +399,11 @@ export async function saveMessage(characterId: number, role: string, content: st
 }
 
 export async function clearMessages(characterId: number, userId: number): Promise<void> {
-  const res = await fetch(`/api/data/messages/${characterId}?userId=${userId}`, { method: 'DELETE' });
+  const res = await fetchApi(
+    `/api/data/messages/${characterId}?userId=${userId}`,
+    { method: 'DELETE' },
+    '清空消息失败'
+  );
   const data = await readJsonApiResponse<ApiStatusPayload>(
     res,
     '清空消息失败',
@@ -313,7 +425,7 @@ export interface EmotionInfo {
 
 export async function getEmotion(characterId: number, userId: number): Promise<EmotionInfo | null> {
   try {
-    const res = await fetch(`/api/data/emotion/${characterId}?userId=${userId}`);
+    const res = await fetchApi(`/api/data/emotion/${characterId}?userId=${userId}`, undefined, '获取情绪状态失败');
     if (!res.ok) return null;
     return await readJsonApiResponse<EmotionInfo>(
       res,
@@ -338,7 +450,7 @@ export interface RelationshipInfo {
 
 export async function getRelationship(characterId: number, userId: number): Promise<RelationshipInfo | null> {
   try {
-    const res = await fetch(`/api/data/relationship/${characterId}?userId=${userId}`);
+    const res = await fetchApi(`/api/data/relationship/${characterId}?userId=${userId}`, undefined, '获取关系状态失败');
     if (!res.ok) return null;
     return await readJsonApiResponse<RelationshipInfo>(
       res,
@@ -364,16 +476,16 @@ export async function sendMessageStream(
 
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetchApi(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ character, messages, characterId: character.id, userId }),
-    });
+    }, '流式聊天失败');
   } catch (networkErr: any) {
     console.error(`[sendMessageStream] 网络错误: url=${url}, characterId=${character.id}, userId=${userId}`, networkErr);
     throw createStreamStageError(
       'pre-connect',
-      `流式连接失败，请检查网络或 /api 代理配置后重试 (${networkErr?.message || '未知错误'})`,
+      networkErr?.message || '流式连接失败，请检查网络或 /api 代理配置后重试。',
       networkErr
     );
   }

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Character, ChatMessage, EmotionInfo, RelationshipInfo } from '../api'
-import { clearMessages, getEmotion, getRelationship, saveMessage, sendMessageStream, StreamChatError } from '../api'
+import { clearMessages, getEmotion, getRelationship, saveMessage, sendMessage, sendMessageStream, StreamChatError } from '../api'
+import { clearChatDraft, getChatDraft, saveChatDraft } from '../userSession'
 
 const props = defineProps<{
   character: Character
@@ -20,6 +21,7 @@ const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 const emotionInfo = ref<EmotionInfo | null>(null)
 const relationshipInfo = ref<RelationshipInfo | null>(null)
+let statusRequestId = 0
 
 function displayPersonality(raw: string): string {
   const publicText = (raw || '')
@@ -39,12 +41,20 @@ const phaseLabel = computed(() => {
 
 const relationshipHint = computed(() => {
   if (props.character.relationshipMode === 'friend') {
-    return '普通聊天关系：只按日常微信/WhatsApp聊天，不触发恋爱和吃醋语气。'
+    return '熟悉的日常聊天对象，回复会保持自然克制。'
   }
   const phase = relationshipInfo.value?.phase
-  if (phase === 'deep_attached') return '恋人关系明确，但回复仍保持日常短消息，不写剧情。'
-  if (phase === 'strained') return '关系有点别扭，会短句表达情绪，不用沉默或动作代替回复。'
-  return '恋人关系：像真实聊天软件里的短消息，轻松自然。'
+  if (phase === 'deep_attached') return '关系很亲近，聊天仍然偏日常。'
+  if (phase === 'strained') return '现在有点别扭，需要慢慢聊开。'
+  return '稳定的日常关系，轻松自然地聊天。'
+})
+
+const emptyCopy = computed(() => {
+  const pronoun = props.character.gender === 'male' ? '他' : props.character.gender === 'female' ? '她' : '对方'
+  if (props.character.relationshipMode === 'friend') {
+    return `${pronoun}会按你们的记忆、熟悉度和最近的话题继续回应。`
+  }
+  return `${pronoun}会按你们的记忆、关系和情绪继续回应。`
 })
 
 function clamp01(value: number | undefined, fallback: number): number {
@@ -65,30 +75,51 @@ const statusItems = computed(() => {
   ]
 })
 
-async function fetchEmotion() {
+async function fetchStatus() {
+  const requestId = ++statusRequestId
+
   if (!props.character?.id || !props.userId) {
     emotionInfo.value = null
-    return
-  }
-  emotionInfo.value = await getEmotion(props.character.id, props.userId)
-}
-
-async function fetchRelationship() {
-  if (!props.character?.id || !props.userId) {
     relationshipInfo.value = null
     return
   }
-  relationshipInfo.value = await getRelationship(props.character.id, props.userId)
-}
 
-async function fetchStatus() {
-  await Promise.all([fetchEmotion(), fetchRelationship()])
+  const [emotionResult, relationshipResult] = await Promise.allSettled([
+    getEmotion(props.character.id, props.userId),
+    getRelationship(props.character.id, props.userId),
+  ])
+
+  if (requestId !== statusRequestId) return
+
+  emotionInfo.value = emotionResult.status === 'fulfilled' ? emotionResult.value : null
+  relationshipInfo.value = relationshipResult.status === 'fulfilled' ? relationshipResult.value : null
 }
 
 onMounted(fetchStatus)
 
 watch(() => props.character?.id, fetchStatus)
 watch(() => props.userId, fetchStatus)
+
+watch(
+  () => [props.userId, props.character?.id] as const,
+  ([userId, characterId]) => {
+    if (!userId || !characterId) {
+      inputText.value = ''
+      return
+    }
+    inputText.value = getChatDraft(userId, characterId)
+  },
+  { immediate: true },
+)
+
+watch(inputText, (draft) => {
+  if (!props.userId || !props.character?.id) return
+  if (draft) {
+    saveChatDraft(props.userId, props.character.id, draft)
+    return
+  }
+  clearChatDraft(props.userId, props.character.id)
+})
 
 function scrollToBottom() {
   nextTick(() => {
@@ -100,8 +131,27 @@ function scrollToBottom() {
 
 watch(() => props.messages.length, scrollToBottom)
 
+function applyAssistantReplies(baseMessages: ChatMessage[], replies: string[], streamContent = '') {
+  if (replies.length > 0) {
+    const finalMessages = [...baseMessages]
+    for (const reply of replies) {
+      finalMessages.push({ role: 'assistant', content: reply })
+    }
+    emit('update:messages', finalMessages)
+    return true
+  }
+
+  if (streamContent) {
+    emit('update:messages', [...baseMessages, { role: 'assistant', content: streamContent }])
+    return true
+  }
+
+  return false
+}
+
 async function send() {
-  const text = inputText.value.trim()
+  const rawText = inputText.value
+  const text = rawText.trim()
   if (!text || loading.value) return
 
   error.value = ''
@@ -135,17 +185,24 @@ async function send() {
       },
     )
 
-    if (replies.length > 0) {
-      const finalMessages = [...updated]
-      for (const reply of replies) {
-        finalMessages.push({ role: 'assistant', content: reply })
-      }
-      emit('update:messages', finalMessages)
-    } else if (streamContent) {
-      emit('update:messages', [...updated, { role: 'assistant', content: streamContent }])
-    }
+    applyAssistantReplies(updated, replies, streamContent)
     fetchStatus()
   } catch (e: any) {
+    const shouldFallbackToNonStream = !streaming.value && !(e instanceof StreamChatError && e.stage === 'after-partial')
+
+    if (shouldFallbackToNonStream) {
+      try {
+        const fallbackReplies = await sendMessage(props.character, updated, props.userId)
+        if (applyAssistantReplies(updated, fallbackReplies)) {
+          error.value = ''
+          fetchStatus()
+          return
+        }
+      } catch (fallbackErr: any) {
+        e = fallbackErr
+      }
+    }
+
     if (e instanceof StreamChatError) {
       error.value = e.message
     } else if (connected && !streaming.value) {
@@ -155,6 +212,9 @@ async function send() {
     }
     if (!(e instanceof StreamChatError && e.stage === 'after-partial') && !streaming.value) {
       emit('update:messages', updated)
+      if (!inputText.value) {
+        inputText.value = rawText
+      }
     }
   } finally {
     loading.value = false
@@ -239,7 +299,7 @@ function handleKeydown(e: KeyboardEvent) {
       <div class="chat-body" ref="chatBody">
         <div v-if="messages.length === 0" class="empty-state">
           <div class="empty-title">对话还没有开始</div>
-          <div class="empty-copy">她默认认同自己是你的对象。发一句话，她会按你们的记忆、关系和情绪继续回应。</div>
+          <div class="empty-copy">{{ emptyCopy }}</div>
         </div>
 
         <div

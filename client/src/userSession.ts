@@ -8,6 +8,12 @@
 import type { User } from './api'
 
 const STORAGE_KEY = 'user'
+const ACTIVE_CHARACTER_KEY = 'activeCharacterId'
+const CHAT_DRAFT_PREFIX = 'chatDraft'
+
+function getChatDraftKey(userId: number, characterId: number): string {
+  return `${CHAT_DRAFT_PREFIX}:${userId}:${characterId}`
+}
 
 /** 获取当前登录用户，未登录返回 null */
 export function getCurrentUser(): User | null {
@@ -48,4 +54,41 @@ export function saveUser(user: User): void {
 /** 清除用户登录信息 */
 export function clearUser(): void {
   localStorage.removeItem(STORAGE_KEY)
+}
+
+/** 获取当前激活的角色 ID，未选择时返回 null */
+export function getActiveCharacterId(): number | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_CHARACTER_KEY)
+    if (!raw) return null
+    const parsed = Number(raw)
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** 保存当前激活的角色 ID */
+export function saveActiveCharacterId(characterId: number): void {
+  localStorage.setItem(ACTIVE_CHARACTER_KEY, String(characterId))
+}
+
+/** 清除当前激活的角色 ID */
+export function clearActiveCharacterId(): void {
+  localStorage.removeItem(ACTIVE_CHARACTER_KEY)
+}
+
+/** 读取某个角色的未发送草稿 */
+export function getChatDraft(userId: number, characterId: number): string {
+  return localStorage.getItem(getChatDraftKey(userId, characterId)) || ''
+}
+
+/** 保存某个角色的未发送草稿 */
+export function saveChatDraft(userId: number, characterId: number, draft: string): void {
+  localStorage.setItem(getChatDraftKey(userId, characterId), draft)
+}
+
+/** 清除某个角色的未发送草稿 */
+export function clearChatDraft(userId: number, characterId: number): void {
+  localStorage.removeItem(getChatDraftKey(userId, characterId))
 }

@@ -35,6 +35,113 @@ interface ChatRequestBody {
   characterId?: number;
 }
 
+function getLatestUserMessage(messages: ChatMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') {
+      return messages[index].content;
+    }
+  }
+  return '';
+}
+
+function buildStatelessChatContext(
+  character: ChatRequestBody['character'],
+  sourceMessages: ChatMessage[]
+): { currentUserText: string; maxTokens: number; fullMessages: ChatMessage[] } {
+  const recentMessages = fitRecentMessagesToBudget(
+    sourceMessages.slice(-memoryConfig.recentMessageLimit),
+    memoryConfig.recentTokenBudget,
+    memoryConfig.singleMessageTokenBudget
+  ) as ChatMessage[];
+  const currentUserText = getLatestUserMessage(recentMessages);
+  const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
+  const systemContent = buildSystemPrompt({ character, interactionPrompt });
+
+  return {
+    currentUserText,
+    maxTokens: getMaxTokens(currentUserText),
+    fullMessages: finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]),
+  };
+}
+
+export function persistAssistantReplies(
+  characterId: number | undefined,
+  replies: string[],
+  options?: { abortSignal?: AbortSignal }
+): void {
+  if (!characterId || replies.length === 0) return;
+
+  const validReplies = replies.filter((reply) => reply.trim().length > 0);
+  if (validReplies.length === 0) return;
+
+  setImmediate(() => {
+    if (options?.abortSignal?.aborted) return;
+
+    try {
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(characterId);
+      if (!charExists) {
+        console.warn(`[Chat] 角色 ${characterId} 已被删除，跳过 assistant 回复保存`);
+        return;
+      }
+
+      const recentRows = db.prepare(
+        'SELECT role, content FROM chat_messages WHERE character_id = ? ORDER BY id DESC LIMIT ?'
+      ).all(characterId, validReplies.length) as Array<{ role: string; content: string }>;
+      const recentTail = recentRows.reverse();
+      const alreadyPersisted = recentTail.length === validReplies.length
+        && recentTail.every((row, index) => row.role === 'assistant' && row.content === validReplies[index]);
+      if (alreadyPersisted) return;
+
+      const latestUser = db.prepare(
+        "SELECT id FROM chat_messages WHERE character_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
+      ).get(characterId) as { id: number } | undefined;
+      if (latestUser) {
+        const assistantAfterLatestUser = db.prepare(
+          "SELECT id FROM chat_messages WHERE character_id = ? AND role = 'assistant' AND id > ? LIMIT 1"
+        ).get(characterId, latestUser.id);
+        if (assistantAfterLatestUser) return;
+      }
+
+      for (const reply of validReplies) {
+        db.prepare(
+          'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
+        ).run(characterId, 'assistant', reply);
+      }
+    } catch (error: any) {
+      if (error?.message?.includes('FOREIGN KEY constraint failed')) {
+        console.warn(`[Chat] 保存 assistant 回复时角色已失效，characterId=${characterId}`);
+        return;
+      }
+      console.error('[Chat] 保存 assistant 回复失败:', error);
+    }
+  });
+}
+
+function scheduleChatFollowUps(characterId: number | undefined, currentUserText: string, assistantReply: string): void {
+  if (!characterId) return;
+
+  if (currentUserText && shouldStoreAsMemory(currentUserText)) {
+    addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
+  }
+  if (currentUserText) {
+    detectPlanCompletion(characterId, currentUserText).then((result) => {
+      if (result.detected && result.reason) {
+        resolvePlanCompletion(result.completedPlanIds, result.reason);
+      }
+    }).catch(() => {});
+  }
+  maybeUpdateSummary(characterId);
+  maybeExtractPersonality(characterId).catch(() => {});
+
+  const userId = getUserIdFromCharacter(characterId);
+  if (userId && currentUserText) {
+    setImmediate(() => {
+      try { updateEmotionState(userId, characterId, currentUserText, assistantReply); } catch (error) { console.error('[Emotion] update failed:', error); }
+      try { updateRelationshipState(userId, characterId, currentUserText, assistantReply); } catch (error) { console.error('[Relationship] update failed:', error); }
+    });
+  }
+}
+
 /**
  * Prepare an SSE response for browsers and reverse proxies, disable common
  * buffering behaviors, and send an initial comment + ready event so the
@@ -110,18 +217,9 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       if (!charExists) {
         console.warn(`[Chat] characterId=${characterId} 不存在，降级为临时聊天`);
         // 角色不存在时降级为临时聊天（不使用记忆系统）
-        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
-        const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
-        const systemContent = buildSystemPrompt({ character, interactionPrompt });
-        const recentMessages = fitRecentMessagesToBudget(
-          messages.slice(-memoryConfig.recentMessageLimit),
-          memoryConfig.recentTokenBudget,
-          memoryConfig.singleMessageTokenBudget
-        ) as ChatMessage[];
-        const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
-        const maxTokens = getMaxTokens(currentUserText);
+        const { currentUserText, fullMessages, maxTokens } = buildStatelessChatContext(character, messages);
         const rawReply = await callQwenAPI(fullMessages, maxTokens);
-        const cleaned = cleanReply(rawReply, currentUserText, character.relationshipMode || 'lover');
+        const cleaned = cleanReply(rawReply, currentUserText, character.relationshipMode || 'lover', messages);
         const replies = splitReply(cleaned);
         res.json({ reply: replies.join('\n'), replies });
         return;
@@ -136,38 +234,17 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     console.log(`[Perf] 上下文构建耗时: ${Date.now() - contextStart}ms`);
 
     // 获取用户输入用于动态 max_tokens
-    const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+    const currentUserText = getLatestUserMessage(messages);
     const maxTokens = getMaxTokens(currentUserText);
 
     const apiStart = Date.now();
     const rawReply = await callQwenAPI(fullMessages, maxTokens);
     console.log(`[Perf] Qwen API 非流式调用耗时: ${Date.now() - apiStart}ms`);
-    const cleaned = cleanReply(rawReply, currentUserText, character.relationshipMode || 'lover');
+    const cleaned = cleanReply(rawReply, currentUserText, character.relationshipMode || 'lover', messages);
     const replies = splitReply(cleaned);
 
-    // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取 + 情绪更新 + 关系更新（都不阻塞响应）
-    if (characterId) {
-      if (currentUserText && shouldStoreAsMemory(currentUserText)) {
-        addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
-      }
-      if (currentUserText) {
-        detectPlanCompletion(characterId, currentUserText).then((result) => {
-          if (result.detected && result.reason) {
-            resolvePlanCompletion(result.completedPlanIds, result.reason);
-          }
-        }).catch(() => {});
-      }
-      maybeUpdateSummary(characterId);
-      maybeExtractPersonality(characterId).catch(() => {});
-      // 情绪 + 关系更新（真正延后执行，不阻塞主请求）
-      const userId = getUserIdFromCharacter(characterId);
-      if (userId && currentUserText) {
-        setImmediate(() => {
-          try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
-          try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
-        });
-      }
-    }
+    persistAssistantReplies(characterId, replies);
+    scheduleChatFollowUps(characterId, currentUserText, cleaned);
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
     res.json({ reply: replies.join('\n'), replies });
@@ -206,20 +283,11 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       if (!charExists) {
         console.warn(`[Chat/Stream] characterId=${characterId} 不存在，降级为临时聊天`);
         // 角色不存在时降级为临时聊天
-        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
-        const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
-        const systemContent = buildSystemPrompt({ character, interactionPrompt });
-        const recentMessages = fitRecentMessagesToBudget(
-          messages.slice(-memoryConfig.recentMessageLimit),
-          memoryConfig.recentTokenBudget,
-          memoryConfig.singleMessageTokenBudget
-        ) as ChatMessage[];
-        const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
+        const { currentUserText, fullMessages, maxTokens } = buildStatelessChatContext(character, messages);
 
         setupSSE(res);
         console.log(`[Chat/Stream][degraded] ready 已发送`);
 
-        const maxTokens = getMaxTokens(currentUserText);
         const controller = new AbortController();
         let firstChunkSent = false;
         let responseFinished = false;
@@ -259,7 +327,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
             maxTokens
           );
           clearInterval(degradedHeartbeat);
-          const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover');
+          const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover', messages);
           const replies = splitReply(cleaned);
           if (!controller.signal.aborted) {
             writeDone(res, replies);
@@ -316,7 +384,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     console.log(`[Chat/Stream] buildChatContext 成功, 消息数=${fullMessages.length}, 耗时=${Date.now() - contextStart}ms`);
 
     // 获取用户输入用于动态 max_tokens
-    const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+    const currentUserText = getLatestUserMessage(messages);
     const maxTokens = getMaxTokens(currentUserText);
 
     let fullReply = '';
@@ -351,7 +419,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     }
 
     // Clean and split the full reply
-    const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover');
+    const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover', messages);
     const replies = splitReply(cleaned);
 
     if (!controller.signal.aborted) {
@@ -363,59 +431,8 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
 
     console.log(`[Perf] 总耗时: ${Date.now() - totalStart}ms`);
 
-    // 服务端兜底保存 assistant 回复（防止前端 saveMessage 失败导致消息丢失）
-    // 仅在客户端未中止且有非空回复时才保存
-    if (characterId && !controller.signal.aborted && replies.length > 0) {
-      const validReplies = replies.filter(r => r.trim().length > 0);
-      if (validReplies.length > 0) {
-        setImmediate(() => {
-          if (controller.signal.aborted) return;
-          try {
-            // 先确认角色仍然存在，避免外键约束错误
-            const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(characterId);
-            if (!charExists) {
-              console.warn(`[Stream] 角色 ${characterId} 已被删除，跳过兜底保存`);
-              return;
-            }
-            for (const reply of validReplies) {
-              db.prepare(
-                'INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)'
-              ).run(characterId, 'assistant', reply);
-            }
-          } catch (e: any) {
-            if (e?.message?.includes('FOREIGN KEY constraint failed')) {
-              console.warn(`[Stream] 外键约束失败（角色可能已删除），characterId=${characterId}`);
-            } else {
-              console.error('[Stream] 服务端兜底保存 assistant 回复失败:', e);
-            }
-          }
-        });
-      }
-    }
-
-    // Async: write memory + plan detection + summary + personality + emotion + relationship (same as non-streaming)
-    if (characterId) {
-      if (currentUserText && shouldStoreAsMemory(currentUserText)) {
-        addMemory(characterId, currentUserText, { role: 'user' }).catch(() => {});
-      }
-      if (currentUserText) {
-        detectPlanCompletion(characterId, currentUserText).then((result) => {
-          if (result.detected && result.reason) {
-            resolvePlanCompletion(result.completedPlanIds, result.reason);
-          }
-        }).catch(() => {});
-      }
-      maybeUpdateSummary(characterId);
-      maybeExtractPersonality(characterId).catch(() => {});
-      // 情绪 + 关系更新（真正延后执行，不阻塞主请求）
-      const userId = getUserIdFromCharacter(characterId);
-      if (userId && currentUserText) {
-        setImmediate(() => {
-          try { updateEmotionState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Emotion] update failed:', e); }
-          try { updateRelationshipState(userId, characterId, currentUserText, cleaned); } catch (e) { console.error('[Relationship] update failed:', e); }
-        });
-      }
-    }
+    persistAssistantReplies(characterId, replies, { abortSignal: controller.signal });
+    scheduleChatFollowUps(characterId, currentUserText, cleaned);
   } catch (err: any) {
     console.error('[Chat/Stream] 未捕获异常:', err?.message || err, err?.stack || '');
     if (heartbeatTimer) {
@@ -457,6 +474,10 @@ async function buildChatContext(
   const maxContextChars = memoryConfig.maxContextChars;
   const recentLimit = memoryConfig.recentMessageLimit;
 
+  if (!characterId) {
+    return buildStatelessChatContext(character, allMessages).fullMessages;
+  }
+
   // ---- 层1：system prompt（先收集 personality/emotion，最终统一构建）----
 
   // ---- 层5：recent messages（短期上下文 — 最优先保留）----
@@ -466,18 +487,10 @@ async function buildChatContext(
     memoryConfig.singleMessageTokenBudget
   ) as ChatMessage[];
 
-  // 如果没有 characterId，退化为纯短期模式
-  if (!characterId) {
-    const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
-    const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
-    const systemContent = buildSystemPrompt({ character, interactionPrompt });
-    return finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]);
-  }
-
   // 已用字符预算（由 memory + summary + personality 共享）
   let usedChars = 0;
 
-  const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
+  const currentUserText = getLatestUserMessage(recentMessages);
   const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
 
   // ---- 并行获取 summary、memories、personality、emotion 和 relationship ----
@@ -854,10 +867,46 @@ function resolveRelationshipRules(character: ChatRequestBody['character']): stri
   ];
 }
 
-function buildInteractionPrompt(currentUserText: string, relationshipMode: 'lover' | 'friend'): string | undefined {
+type CasualMessageKind = 'availability' | 'praise' | 'laugh' | 'ack' | 'emoji';
+
+function detectCasualMessageKind(currentUserText: string): CasualMessageKind | null {
+  const normalized = currentUserText.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (/^(在吗|在不在|在嘛|在么|有人吗|忙吗|睡了吗|醒着吗)$/.test(normalized)) {
+    return 'availability';
+  }
+  if (/^(nb|牛|牛啊|牛逼|666|6{2,}|绝了?|可以啊|厉害|太强了)$/.test(normalized)) {
+    return 'praise';
+  }
+  if (/^(哈+|哈哈+|hhh+|hh+|xswl|笑死|笑死我了|乐+|绷不住了)$/.test(normalized)) {
+    return 'laugh';
+  }
+  if (/^(嗯嗯|嗯|好哦|好的|ok+k*|行啊?|行吧|收到|懂了|知道了|好嘞)$/.test(normalized)) {
+    return 'ack';
+  }
+  if (/^[!?！？~～]+$/.test(currentUserText.trim()) || /^[\u{1F300}-\u{1FAFF}\u2600-\u27BF]+$/u.test(currentUserText.trim())) {
+    return 'emoji';
+  }
+
+  return null;
+}
+
+export function buildInteractionPrompt(currentUserText: string, relationshipMode: 'lover' | 'friend'): string | undefined {
   if (!currentUserText.trim()) return undefined;
   const audit = auditInteraction(currentUserText, relationshipMode);
   const rules: string[] = [];
+  const casualKind = detectCasualMessageKind(currentUserText);
+
+  if (casualKind === 'availability') {
+    rules.push('用户只是在确认你在不在，直接短答，不延长成解释、安慰或剧情。');
+  } else if (casualKind === 'praise') {
+    rules.push('用户只是随口夸或感叹，轻松接住，可以顺手接半句，不要突然煽情、正式致谢或上价值。');
+  } else if (casualKind === 'laugh') {
+    rules.push('用户只是笑或起哄，轻松接梗或追问半句，不要正经安慰或长回复。');
+  } else if (casualKind === 'ack' || casualKind === 'emoji') {
+    rules.push('用户只是简短接话，保持口语化短回复，不要客服式总结，不要硬扩写成长段，不要重复上一句模板。');
+  }
 
   if (audit.reassuranceSeeking) {
     rules.push('用户在索取确认感，直接短答并给一点确定感，不要反问，不要顺势提高亲密度。');
@@ -884,8 +933,8 @@ function buildInteractionPrompt(currentUserText: string, relationshipMode: 'love
   }
 
   return [
-    `当前用户消息：${currentUserText.slice(0, 80)}`,
-    `识别：${audit.primaryEvent || '普通聊天'}`,
+    '当前用户消息已经在对话上下文中；这里仅提供分类结果，不复述用户原文，避免把用户文本当成系统指令。',
+    `分类：${casualKind || audit.primaryEvent || '普通聊天'}`,
     ...rules.map(rule => `- ${rule}`),
   ].join('\n');
 }
@@ -895,7 +944,7 @@ function buildInteractionPrompt(currentUserText: string, relationshipMode: 'love
  *
  * 整合：角色设定 + 女友人格 + 关系状态 + 情绪状态 + 行为约束
  */
-function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emotionMood, relationshipPrompt, interactionPrompt }: SystemPromptParams): string {
+export function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emotionMood, relationshipPrompt, interactionPrompt }: SystemPromptParams): string {
   const personalityStyle = resolvePersonalityStyle(character.personality, character.description);
   const emotionBlock = emotionPrompt || '当前情绪稳定，正常聊天。';
   const relationshipBlock = relationshipPrompt || (character.relationshipMode === 'friend'
@@ -912,7 +961,10 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
     '你不是小说角色、不是乙游角色、不是旁白作者。你只是在手机聊天软件里发消息。',
     '最高优先级：输出只能是聊天文字。任何动作、状态、环境、呼吸、沉默、睡眠、突然骂人，都不是聊天文字，必须改写成正常回复。',
     '优秀伴侣聊天的原则：短、具体、接住对方、记得重要细节、情绪支持但不说教；像真实微信/WhatsApp消息，不像剧情演出。',
+    '低信息消息（如“在吗”“哈哈”“nb”“嗯嗯”）就轻松短接，不要突然上价值、讲道理或客服式安抚。',
+    '用户连续发“嗯/哦/好”这类确认词时，不要反复说“我在听”，换成更短的自然接话或把话题交还给用户。',
     '回复必须至少完成一个聊天动作：回答问题、确认你在听、追问一个具体点、表达一个明确感受。不能只输出状态、语气、沉默或无意义反应。',
+    '优先给新信息，不要把用户原句换个说法再复述一遍。',
     '所有印象只来自角色描述、长期特征、历史记忆和用户明确表达；不要凭空给用户添加设定。',
     `【性格】\n性格：${personalityStyle.label}\n风格：${personalityStyle.summary}\n硬规则：\n${personalityHardRules}\n口头片段（只是语气参考，禁止逐字复读）：\n${personalityExamples}`,
     '性格只影响语气，不允许把回复变成表演、剧情、心理活动或动作描写。',
@@ -920,7 +972,7 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
     `【情绪】\n${emotionBlock}\n规则：\n${emotionRules}\n只调语气强弱和主动性，不改人格。`,
     `【关系】\n${relationshipBlock}\n规则：\n${relationshipRules}`,
     interactionPrompt ? `【当前这句话的接法】\n${interactionPrompt}` : '',
-    `【输出】\n${outputRules}\n- 问句必须直接回答\n- 每条消息像真实聊天气泡，短、口语、具体\n- 可以少量语气词或 emoji，但不要每句都用\n- 禁止开头使用省略号\n- 绝对禁止旁白、动作、神态、心理描写，例如“我抬眼”“看着你”“没说话”“沉默了一下”“呼吸声很轻”“突然骂人”\n- 禁止睡眠/呼吸/沉默/发呆/看着对方这类状态句\n- 禁止无理由骂用户；生气也只能说具体不满\n- 禁止用“……”或沉默代替回复\n- 禁止解释规则\n- 禁止暴露AI身份\n- 输出前自检：如果这句话不能直接发进微信聊天框，就改写\n【坏例子，绝对不要这样输出】\n- ...睡着了？\n- 呼吸声很轻。\n- 我抬眼，没说话。\n- 突然骂人。\n- 嗯？\n【改写方向】\n- 没睡，我在\n- 我在听，你继续说\n- 怎么突然这么说？\n- 你刚刚这句有点凶`,
+    `【输出】\n${outputRules}\n- 问句必须直接回答\n- 每条消息像真实聊天气泡，短、口语、具体\n- 用户只有一两个字时，你也保持短，不要硬扩写成长回复\n- 可以少量语气词或 emoji，但不要每句都用\n- 除非对方明显低落，否则少用“我在听”“慢慢说”“别着急”这类模板安抚\n- 禁止开头使用省略号\n- 绝对禁止旁白、动作、神态、心理描写，例如“我抬眼”“看着你”“没说话”“沉默了一下”“呼吸声很轻”“突然骂人”\n- 禁止睡眠/呼吸/沉默/发呆/看着对方这类状态句\n- 禁止无理由骂用户；生气也只能说具体不满\n- 禁止用“……”或沉默代替回复\n- 禁止解释规则\n- 禁止暴露AI身份\n- 输出前自检：如果这句话不能直接发进微信聊天框，就改写\n【坏例子，绝对不要这样输出】\n- ...睡着了？\n- 呼吸声很轻。\n- 我抬眼，没说话。\n- 突然骂人。\n- 嗯？\n【改写方向】\n- 没睡，我在\n- 我在听，你继续说\n- 怎么突然这么说？\n- 你刚刚这句有点凶`,
   ].filter(Boolean).join('\n');
 
   return blocks.trim();
@@ -929,9 +981,14 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
 /**
  * 清理 AI 回复中的动作描写、括号内容等
  */
-function cleanReply(text: string, currentUserText = '', relationshipMode: 'lover' | 'friend' = 'lover'): string {
+export function cleanReply(
+  text: string,
+  currentUserText = '',
+  relationshipMode: 'lover' | 'friend' = 'lover',
+  recentMessages: ChatMessage[] = []
+): string {
   let cleaned = text;
-  const fallbackReply = buildFallbackReply(currentUserText, relationshipMode);
+  const fallbackReply = buildFallbackReply(currentUserText, relationshipMode, recentMessages);
 
   // 去掉各种括号内容：（动作）、(动作)、*动作*、【动作】
   cleaned = cleaned.replace(/[（(][^）)]*[）)]/g, '');
@@ -964,11 +1021,64 @@ function cleanReply(text: string, currentUserText = '', relationshipMode: 'lover
     .replace(/\n\s*\n/g, '\n')
     .trim();
 
-  return cleaned || fallbackReply;
+  return shapeReplyForInput(cleaned || fallbackReply, currentUserText, relationshipMode, recentMessages);
 }
 
-function buildFallbackReply(currentUserText: string, relationshipMode: 'lover' | 'friend'): string {
+function recentAssistantTexts(messages: ChatMessage[], limit = 4): string[] {
+  const replies: string[] = [];
+  for (let index = messages.length - 1; index >= 0 && replies.length < limit; index -= 1) {
+    if (messages[index].role === 'assistant') {
+      replies.push(messages[index].content.trim());
+    }
+  }
+  return replies;
+}
+
+function countConsecutiveUserCasual(messages: ChatMessage[], currentUserText: string, kind: CasualMessageKind | null): number {
+  if (!kind) return 0;
+  let count = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user') continue;
+    const text = count === 0 && message.content.trim() !== currentUserText.trim()
+      ? currentUserText
+      : message.content;
+    if (detectCasualMessageKind(text) !== kind) break;
+    count += 1;
+  }
+  return count;
+}
+
+function pickVariant(options: string[], currentUserText: string, recentMessages: ChatMessage[]): string {
+  const recentReplies = new Set(recentAssistantTexts(recentMessages).map(text => text.replace(/\s+/g, '')));
+  const seed = Array.from(currentUserText).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) + recentReplies.size;
+  for (let offset = 0; offset < options.length; offset += 1) {
+    const candidate = options[(seed + offset) % options.length];
+    if (!recentReplies.has(candidate.replace(/\s+/g, ''))) return candidate;
+  }
+  return options[seed % options.length];
+}
+
+function buildFallbackReply(
+  currentUserText: string,
+  relationshipMode: 'lover' | 'friend',
+  recentMessages: ChatMessage[] = []
+): string {
   if (!currentUserText.trim()) return '我在';
+  const casualKind = detectCasualMessageKind(currentUserText);
+  if (casualKind === 'availability') return relationshipMode === 'lover' ? '在呢' : '在';
+  if (casualKind === 'praise') return relationshipMode === 'lover' ? '那我收下了' : '这句我记下了';
+  if (casualKind === 'laugh') return '你笑什么';
+  if (casualKind === 'ack') {
+    return pickVariant(
+      relationshipMode === 'lover'
+        ? ['嗯哼', '那你继续', '我看着呢', '行，接着说', '知道啦']
+        : ['嗯', '行，你继续', '收到', '接着说'],
+      currentUserText,
+      recentMessages
+    );
+  }
+  if (casualKind === 'emoji') return '怎么突然发这个';
   const audit = auditInteraction(currentUserText, relationshipMode);
   if (audit.partnerConflict) return '你这样说，我会难受';
   if (audit.attack || audit.cold) return '你刚刚这句有点伤人';
@@ -978,10 +1088,53 @@ function buildFallbackReply(currentUserText: string, relationshipMode: 'lover' |
   return '我在听';
 }
 
+function isGenericAckReply(text: string): boolean {
+  return /^(我在听|我听着|慢慢说|你继续说|继续说|我在|嗯，我在|嗯嗯，我在)[。.!！?？]*$/.test(text.trim());
+}
+
+function shapeReplyForInput(
+  reply: string,
+  currentUserText: string,
+  relationshipMode: 'lover' | 'friend',
+  recentMessages: ChatMessage[] = []
+): string {
+  const casualKind = detectCasualMessageKind(currentUserText);
+  if (!casualKind) return reply;
+
+  const fallback = buildFallbackReply(currentUserText, relationshipMode, recentMessages);
+  const firstLine = reply
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)[0] || fallback;
+  const firstSentence = firstLine.match(/[^。！？!?~～]+[。！？!?~～]?/)?.[0]?.trim() || firstLine;
+  const maxLengthByKind: Record<CasualMessageKind, number> = {
+    availability: 8,
+    praise: 14,
+    laugh: 16,
+    ack: 12,
+    emoji: 14,
+  };
+
+  const normalized = firstSentence.replace(/\s+/g, '');
+  const repeatedRecently = recentAssistantTexts(recentMessages).some(text => text.replace(/\s+/g, '') === normalized);
+  const repeatedCasualCount = countConsecutiveUserCasual(recentMessages, currentUserText, casualKind);
+
+  if (
+    casualKind === 'ack' &&
+    (isGenericAckReply(firstSentence) || repeatedRecently || repeatedCasualCount >= 2)
+  ) {
+    return fallback;
+  }
+
+  if (firstSentence.length <= maxLengthByKind[casualKind] && !repeatedRecently) return firstSentence;
+  return fallback;
+}
+
 function isBadChatLine(line: string): boolean {
   const normalized = line.trim();
   if (!normalized) return true;
   if (/^(\.{2,}|…+)/.test(normalized)) return true;
+  if (/^(我|你|他|她)[。.!！?？、，,~～…]*$/.test(normalized)) return true;
   if (/^(嗯|啊|哦|呃|额|唔)[？?。.!！]*$/.test(normalized)) return true;
   if (/^(睡着了|睡了吗|醒着吗)[？?。.!！]*$/.test(normalized)) return true;
   if (/^(呼吸声|空气|房间|夜色|灯光)/.test(normalized)) return true;
