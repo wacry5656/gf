@@ -32,6 +32,8 @@ db.exec(`
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     gender TEXT NOT NULL,
+    user_gender TEXT DEFAULT 'male',
+    relationship_mode TEXT DEFAULT 'lover',
     personality TEXT NOT NULL,
     description TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now')),
@@ -151,6 +153,8 @@ const migrations: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE memories ADD COLUMN invalidation_reason TEXT' },
   { sql: "ALTER TABLE memories ADD COLUMN keywords TEXT DEFAULT '[]'" },
   { sql: 'ALTER TABLE emotion_state ADD COLUMN anger_score REAL DEFAULT 0.0' },
+  { sql: "ALTER TABLE characters ADD COLUMN user_gender TEXT DEFAULT 'male'" },
+  { sql: "ALTER TABLE characters ADD COLUMN relationship_mode TEXT DEFAULT 'lover'" },
 ];
 
 for (const m of migrations) {

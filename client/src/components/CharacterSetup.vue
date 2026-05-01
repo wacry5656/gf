@@ -2,45 +2,64 @@
 import { reactive } from 'vue'
 import type { Character } from '../api'
 
+const props = defineProps<{
+  submitting?: boolean
+}>()
+
 const emit = defineEmits<{
   confirm: [character: Character]
 }>()
 
 const presetPersonalities = [
-  '温柔体贴、善解人意',
-  '活泼开朗、古灵精怪',
-  '高冷傲娇、口是心非',
-  '知性优雅、博学多才',
-  '元气少女、天真烂漫',
-  '成熟稳重、可靠温暖',
+  '自然：像普通人聊天，认真接话，不表演',
+  '温和：语气柔和，会照顾情绪，但不长篇安慰',
+  '直率：直接表达想法，不绕弯，不突然发脾气',
+  '轻松：口语自然，偶尔开玩笑，但不过度玩梗',
+  '克制：话少一点，但必须正常回答，不用沉默代替回复',
+  '慢热：一开始简短自然，熟悉后更主动一点',
+]
+
+const replyStyles = [
+  '短句：每次1到2条消息，每条尽量不超过18个字',
+  '自然：每次1到3条消息，像微信聊天',
+  '主动：可以多追问一句，但不要连续提问',
 ]
 
 const form = reactive({
   name: '',
   gender: 'female' as Character['gender'],
+  userGender: 'male' as NonNullable<Character['userGender']>,
+  relationshipMode: 'lover' as NonNullable<Character['relationshipMode']>,
   personality: presetPersonalities[0],
+  replyStyle: replyStyles[1],
   customPersonality: '',
   useCustom: false,
   description: '',
 })
 
 function submit() {
+  if (props.submitting) return
   if (!form.name.trim()) return
   const personality = form.useCustom
     ? form.customPersonality.trim()
     : form.personality
   if (!personality) return
+  const finalPersonality = [
+    personality,
+    form.replyStyle,
+    '边界：禁止旁白、动作描写、心理描写、沉默状态、睡眠状态、呼吸声、突然骂人、阴阳怪气、辱骂用户。',
+  ].join('\n')
 
   emit('confirm', {
     name: form.name.trim(),
     gender: form.gender,
-    personality,
+    userGender: form.userGender,
+    relationshipMode: form.relationshipMode,
+    personality: finalPersonality,
     description: form.description.trim() || (
-      form.gender === 'female'
-        ? '你是用户的女朋友，你们正在恋爱中，日常聊天温馨甜蜜'
-        : form.gender === 'male'
-          ? '你是用户的男朋友，你们正在恋爱中，日常聊天温馨甜蜜'
-        : '你默认认同自己是用户的对象/恋人，关系亲密，聊天自然有陪伴感和暧昧感'
+      form.relationshipMode === 'lover'
+        ? '你们是恋人关系，但只用微信/WhatsApp式短消息聊天，不写旁白和动作。'
+        : '你们是熟悉的日常聊天对象，只用微信/WhatsApp式短消息聊天，不写旁白和动作。'
     ),
   })
 }
@@ -58,17 +77,34 @@ function submit() {
         </div>
 
         <div class="field">
-          <label>性别</label>
+          <label>角色性别</label>
           <div class="radio-group">
             <label><input type="radio" v-model="form.gender" value="female" /> 女</label>
             <label><input type="radio" v-model="form.gender" value="male" /> 男</label>
-            <label><input type="radio" v-model="form.gender" value="other" /> 其它</label>
+            <label><input type="radio" v-model="form.gender" value="other" /> 不限定</label>
+          </div>
+        </div>
+
+        <div class="field field-split">
+          <div>
+            <label>你的性别</label>
+            <div class="radio-group compact">
+              <label><input type="radio" v-model="form.userGender" value="male" /> 男</label>
+              <label><input type="radio" v-model="form.userGender" value="female" /> 女</label>
+            </div>
+          </div>
+          <div>
+            <label>关系</label>
+            <div class="radio-group compact">
+              <label><input type="radio" v-model="form.relationshipMode" value="lover" /> 恋人</label>
+              <label><input type="radio" v-model="form.relationshipMode" value="friend" /> 非恋人</label>
+            </div>
           </div>
         </div>
 
         <div class="field">
           <label>
-            性格设定
+            人格
             <span class="toggle" @click="form.useCustom = !form.useCustom">
               {{ form.useCustom ? '选择预设 ▾' : '自定义 ✎' }}
             </span>
@@ -81,12 +117,21 @@ function submit() {
         </div>
 
         <div class="field">
+          <label>回复节奏</label>
+          <select v-model="form.replyStyle">
+            <option v-for="style in replyStyles" :key="style" :value="style">{{ style }}</option>
+          </select>
+        </div>
+
+        <div class="field">
           <label>角色描述 <span class="optional">(可选)</span></label>
           <textarea v-model="form.description" placeholder="描述角色的背景、说话风格等..."
             rows="3" maxlength="300"></textarea>
         </div>
 
-        <button type="submit" class="btn-primary">开始聊天</button>
+        <button type="submit" class="btn-primary" :disabled="submitting">
+          {{ submitting ? '创建中...' : '开始聊天' }}
+        </button>
       </form>
     </div>
   </div>
@@ -121,7 +166,8 @@ function submit() {
   margin-bottom: 18px;
 }
 
-.field > label {
+.field > label,
+.field-split > div > label {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -169,12 +215,28 @@ input:focus, select:focus, textarea:focus {
   gap: 20px;
 }
 
+.field-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.radio-group.compact {
+  gap: 12px;
+}
+
 .radio-group label {
   display: flex;
   align-items: center;
   gap: 4px;
   cursor: pointer;
   font-weight: 400;
+}
+
+@media (max-width: 560px) {
+  .field-split {
+    grid-template-columns: 1fr;
+  }
 }
 
 .btn-primary {
@@ -192,5 +254,10 @@ input:focus, select:focus, textarea:focus {
 
 .btn-primary:hover {
   background: #5a52d9;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

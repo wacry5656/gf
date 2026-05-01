@@ -13,6 +13,9 @@ const activeCharacter = ref<Character | null>(null)
 const chatMessages = ref<ChatMessage[]>([])
 const showNewCharacter = ref(false)
 const loading = ref(false)
+const appError = ref('')
+const creatingCharacter = ref(false)
+const deletingCharacterId = ref<number | null>(null)
 
 // 初始化：检查本地存储的登录信息
 onMounted(() => {
@@ -24,18 +27,29 @@ onMounted(() => {
 })
 
 function onLogin(u: User) {
+  appError.value = ''
   user.value = u
   saveUser(u)
   loadCharacters()
 }
 
-function onLogout() {
+function resetSession(message = '') {
   user.value = null
   activeCharacter.value = null
   chatMessages.value = []
   characters.value = []
   showNewCharacter.value = false
   clearUser()
+  appError.value = message
+}
+
+function onLogout() {
+  resetSession()
+}
+
+function isExpiredLoginError(e: unknown): boolean {
+  const message = e instanceof Error ? e.message : String(e || '')
+  return message.includes('登录已失效') || message.includes('重新登录')
 }
 
 async function loadCharacters() {
@@ -43,16 +57,24 @@ async function loadCharacters() {
   loading.value = true
   try {
     characters.value = await getCharacters(user.value.userId)
-  } catch (e) {
+    appError.value = ''
+  } catch (e: any) {
     console.error(e)
+    if (isExpiredLoginError(e)) {
+      resetSession('本地登录已失效，请重新登录。')
+    } else {
+      appError.value = e?.message || '加载角色失败'
+    }
   } finally {
     loading.value = false
   }
 }
 
 async function onCharacterConfirm(char: Character) {
-  if (!user.value) return
+  if (!user.value || creatingCharacter.value) return
+  creatingCharacter.value = true
   try {
+    appError.value = ''
     const charId = await createCharacter(user.value.userId, char)
     char.id = charId
     characters.value.unshift(char)
@@ -60,6 +82,13 @@ async function onCharacterConfirm(char: Character) {
     await selectCharacter(char)
   } catch (e: any) {
     console.error(e)
+    if (isExpiredLoginError(e)) {
+      resetSession('本地登录已失效，请重新登录。')
+    } else {
+      appError.value = e?.message || '创建角色失败'
+    }
+  } finally {
+    creatingCharacter.value = false
   }
 }
 
@@ -69,13 +98,24 @@ async function selectCharacter(char: Character) {
   if (char.id && user.value) {
     try {
       chatMessages.value = await getMessages(char.id, user.value.userId)
-    } catch (e) { console.error('[App] 加载历史消息失败:', e) }
+    } catch (e: any) {
+      console.error('[App] 加载历史消息失败:', e)
+      if (isExpiredLoginError(e)) {
+        resetSession('本地登录已失效，请重新登录。')
+      } else {
+        appError.value = e?.message || '加载历史消息失败'
+      }
+    }
   }
 }
 
 async function onDeleteCharacter(char: Character) {
   if (!char.id || !user.value) return
+  if (deletingCharacterId.value) return
+  if (!window.confirm(`确定删除「${char.name}」和她的聊天记录吗？`)) return
+  deletingCharacterId.value = char.id
   try {
+    appError.value = ''
     await deleteCharacter(char.id, user.value.userId)
     // 删除成功后，重新请求角色列表而非只做本地过滤
     if (activeCharacter.value?.id === char.id) {
@@ -85,13 +125,29 @@ async function onDeleteCharacter(char: Character) {
     await loadCharacters()
   } catch (e: any) {
     console.error(e)
-    alert(e.message || '删除角色失败，请重试')
+    if (isExpiredLoginError(e)) {
+      resetSession('本地登录已失效，请重新登录。')
+    } else {
+      appError.value = e?.message || '删除角色失败，请重试'
+    }
+  } finally {
+    deletingCharacterId.value = null
   }
 }
 
 function goBack() {
   activeCharacter.value = null
   chatMessages.value = []
+}
+
+function displayPersonality(raw: string): string {
+  const publicText = (raw || '')
+    .replace(/\s+/g, ' ')
+    .split(/[\n\r]|主动[:：]|回复节奏[:：]|边界[:：]|禁止旁白|禁止动作|禁止心理|系统规则|聊天规则/)[0]
+    ?.trim() || '自然聊天'
+  return publicText
+    .replace(/^(自然|温和|直率|轻松|克制|慢热)[:：]\s*/, '$1：')
+    .replace(/[。.]?$/, '')
 }
 </script>
 
@@ -103,6 +159,7 @@ function goBack() {
         <h1>虚拟聊天角色</h1>
       </header>
       <main class="app-main">
+        <div v-if="appError" class="app-error">{{ appError }}</div>
         <LoginPage @login="onLogin" />
       </main>
     </template>
@@ -119,8 +176,14 @@ function goBack() {
       </header>
 
       <main class="app-main">
+        <div v-if="appError" class="app-error">{{ appError }}</div>
+
         <!-- 创建角色 -->
-        <CharacterSetup v-if="showNewCharacter" @confirm="onCharacterConfirm" />
+        <CharacterSetup
+          v-if="showNewCharacter"
+          :submitting="creatingCharacter"
+          @confirm="onCharacterConfirm"
+        />
 
         <!-- 聊天界面 -->
         <ChatWindow
@@ -153,13 +216,14 @@ function goBack() {
               <div class="char-avatar">{{ char.name.slice(0, 1) }}</div>
               <div class="char-info">
                 <div class="char-name">{{ char.name }}</div>
-                <div class="char-desc">{{ char.personality }}</div>
+                <div class="char-desc">{{ displayPersonality(char.personality) }}</div>
               </div>
               <button
                 class="btn-delete"
+                :disabled="deletingCharacterId === char.id"
                 @click.stop="onDeleteCharacter(char)"
                 title="删除角色"
-              >✕</button>
+              >{{ deletingCharacterId === char.id ? '...' : '✕' }}</button>
             </div>
           </div>
         </div>
@@ -233,6 +297,15 @@ function goBack() {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.app-error {
+  flex-shrink: 0;
+  padding: 10px 18px;
+  color: #b42318;
+  background: #fff1f0;
+  border-bottom: 1px solid #ffd3cc;
+  font-size: 0.88rem;
 }
 
 /* 角色列表 */
@@ -347,5 +420,11 @@ function goBack() {
 .btn-delete:hover {
   color: #e53935;
   background: rgba(229, 57, 53, 0.08);
+}
+
+.btn-delete:disabled {
+  color: #999;
+  cursor: wait;
+  background: transparent;
 }
 </style>

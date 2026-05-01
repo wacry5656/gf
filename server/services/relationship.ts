@@ -11,6 +11,7 @@
  *   - 高敏但不乱跳：明显亲密/冷淡表达会立刻反馈，普通闲聊不刷分
  */
 import db from '../db';
+import { auditInteraction } from './interactionAudit';
 
 // ========== 类型定义 ==========
 
@@ -28,20 +29,15 @@ export interface RelationshipState {
   updated_at: string;
 }
 
-// ========== 关键词规则 ==========
+// ========== 默认状态 ==========
 
 const DEFAULT_RELATIONSHIP = {
-  closeness: 0.72,
-  trust: 0.62,
-  dependence: 0.64,
-  comfortLevel: 0.74,
+  closeness: 0.68,
+  trust: 0.58,
+  dependence: 0.48,
+  comfortLevel: 0.68,
   phase: 'attached' as RelationshipPhase,
 };
-
-const INTIMATE_KEYWORDS = ['想你', '爱你', '抱抱', '亲亲', '宝宝', '老婆', '老公', '宝贝', '乖', '对象', '女朋友', '男朋友', '贴贴', 'mua', '陪我', '想我'];
-const CARING_KEYWORDS = ['辛苦了', '你没事吧', '别难过', '抱抱你', '你还好吗', '我陪你', '别怕', '有我在', '心疼你', '照顾你'];
-const COLD_KEYWORDS = ['随便', '算了', '滚', '闭嘴', '烦死了', '别吵', '懒得理你', '无所谓', '不想理你', '别烦我'];
-const THIRD_PARTY_KEYWORDS = ['我陪别人', '别的女生', '别的男生', '别人更好', '她比你好', '他比你好', '前任', '另一个'];
 
 // ========== Helpers ==========
 
@@ -49,8 +45,11 @@ function clamp(value: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function containsAny(text: string, keywords: string[]): boolean {
-  return keywords.some(k => text.includes(k));
+function getCharacterRelationshipMode(characterId: number): 'lover' | 'friend' {
+  const row = db
+    .prepare('SELECT relationship_mode FROM characters WHERE id = ?')
+    .get(characterId) as { relationship_mode?: string } | undefined;
+  return row?.relationship_mode === 'friend' ? 'friend' : 'lover';
 }
 
 function sensitivity(): number {
@@ -76,6 +75,11 @@ function determinePhase(closeness: number, trust: number, comfortLevel: number):
  * 确保 relationship_state 记录存在，不存在则插入默认值
  */
 export function ensureRelationshipState(userId: number, characterId: number): void {
+  const relationshipMode = getCharacterRelationshipMode(characterId);
+  const defaults = relationshipMode === 'friend'
+    ? { closeness: 0.42, trust: 0.52, dependence: 0.18, comfortLevel: 0.56, phase: 'close' as RelationshipPhase }
+    : DEFAULT_RELATIONSHIP;
+
   db.prepare(
     `INSERT OR IGNORE INTO relationship_state
        (user_id, character_id, closeness, trust, dependence, comfort_level, phase)
@@ -83,11 +87,11 @@ export function ensureRelationshipState(userId: number, characterId: number): vo
   ).run(
     userId,
     characterId,
-    DEFAULT_RELATIONSHIP.closeness,
-    DEFAULT_RELATIONSHIP.trust,
-    DEFAULT_RELATIONSHIP.dependence,
-    DEFAULT_RELATIONSHIP.comfortLevel,
-    DEFAULT_RELATIONSHIP.phase
+    defaults.closeness,
+    defaults.trust,
+    defaults.dependence,
+    defaults.comfortLevel,
+    defaults.phase
   );
 
   db.prepare(
@@ -97,11 +101,11 @@ export function ensureRelationshipState(userId: number, characterId: number): vo
        AND closeness = 0.5 AND trust = 0.5 AND dependence = 0.3 AND comfort_level = 0.5
        AND phase = 'close' AND last_event IS NULL`
   ).run(
-    DEFAULT_RELATIONSHIP.closeness,
-    DEFAULT_RELATIONSHIP.trust,
-    DEFAULT_RELATIONSHIP.dependence,
-    DEFAULT_RELATIONSHIP.comfortLevel,
-    DEFAULT_RELATIONSHIP.phase,
+    defaults.closeness,
+    defaults.trust,
+    defaults.dependence,
+    defaults.comfortLevel,
+    defaults.phase,
     userId,
     characterId
   );
@@ -140,52 +144,51 @@ export function updateRelationshipState(
   _aiReply: string
 ): void {
   const state = getRelationshipState(userId, characterId);
+  const relationshipMode = getCharacterRelationshipMode(characterId);
 
   let { closeness, trust, dependence, comfort_level } = state;
   let lastEvent: string | null = state.last_event;
-  let matched = false;
+  const audit = auditInteraction(userInput, relationshipMode);
+  const partnerConflict = audit.partnerConflict;
 
-  // 规则1：亲密表达
-  if (containsAny(userInput, INTIMATE_KEYWORDS)) {
-    closeness += delta(0.055, userInput);
-    trust += delta(0.035, userInput);
-    comfort_level += delta(0.045, userInput);
-    dependence += delta(0.04, userInput);
-    lastEvent = '亲密互动';
-    matched = true;
+  // 规则1：亲密表达/索取确认只记录事件，不直接涨分，避免关键词刷好感。
+  if (relationshipMode === 'lover' && !partnerConflict && (audit.intimateExpression || audit.reassuranceSeeking)) {
+    lastEvent = audit.primaryEvent || '亲密互动';
   }
 
-  // 规则2：安慰/关心
-  if (containsAny(userInput, CARING_KEYWORDS)) {
-    trust += delta(0.06, userInput);
-    closeness += delta(0.035, userInput);
-    comfort_level += delta(0.055, userInput);
-    dependence += delta(0.025, userInput);
-    lastEvent = '被关心安慰';
-    matched = true;
+  // 规则2：通过审核的真实关心/修复/承诺才小幅增长。
+  if (audit.canIncreaseBond) {
+    const scoreBoost = Math.min(1.5, audit.positiveScore) / 1.5;
+    trust += delta(0.025 + 0.025 * scoreBoost, userInput);
+    closeness += delta(0.014 + 0.018 * scoreBoost, userInput);
+    comfort_level += delta(0.024 + 0.024 * scoreBoost, userInput);
+    dependence += delta(0.008 + 0.012 * scoreBoost, userInput);
+    lastEvent = audit.primaryEvent || '正向互动';
   }
 
   // 规则3：冷淡/攻击
-  if (containsAny(userInput, COLD_KEYWORDS)) {
-    trust -= delta(0.075, userInput);
-    closeness -= delta(0.06, userInput);
-    comfort_level -= delta(0.07, userInput);
-    dependence -= delta(0.03, userInput);
-    lastEvent = '冷淡或攻击互动';
-    matched = true;
+  if (audit.cold || audit.attack) {
+    trust -= delta(audit.attack ? 0.09 : 0.06, userInput);
+    closeness -= delta(audit.attack ? 0.075 : 0.045, userInput);
+    comfort_level -= delta(audit.attack ? 0.085 : 0.055, userInput);
+    dependence -= delta(audit.attack ? 0.035 : 0.02, userInput);
+    lastEvent = audit.primaryEvent || '冷淡或攻击互动';
   }
 
   // 规则4：第三者/他人优先
-  if (containsAny(userInput, THIRD_PARTY_KEYWORDS)) {
-    closeness -= delta(0.055, userInput);
-    trust -= delta(0.055, userInput);
-    comfort_level -= delta(0.04, userInput);
-    lastEvent = '第三者话题';
-    matched = true;
+  if (relationshipMode === 'lover' && audit.thirdParty) {
+    closeness -= delta(partnerConflict ? 0.18 : 0.055, userInput);
+    trust -= delta(partnerConflict ? 0.16 : 0.055, userInput);
+    comfort_level -= delta(partnerConflict ? 0.12 : 0.04, userInput);
+    dependence -= delta(partnerConflict ? 0.08 : 0.02, userInput);
+    lastEvent = audit.primaryEvent || (partnerConflict ? '关系冲突' : '第三者话题');
   }
 
   // 规则5：中性聊天 — 不改变关系状态（不再自动升温）
   // 只有明确正向互动（亲密、关心）才提升关系
+  if (relationshipMode === 'friend') {
+    dependence = Math.min(dependence, 0.35);
+  }
 
   // clamp 所有分值
   closeness = clamp(closeness);
@@ -208,11 +211,16 @@ export function updateRelationshipState(
  * 构建关系状态提示（1 句话，60~80 字）
  */
 export function buildRelationshipPrompt(state: RelationshipState): string {
+  const relationshipMode = getCharacterRelationshipMode(state.character_id);
+  if (relationshipMode === 'friend') {
+    return '你们是熟悉的普通聊天对象，只按日常朋友/熟人聊天，不制造恋爱、暧昧或吃醋。';
+  }
+
   const phaseMap: Record<RelationshipPhase, string> = {
-    close: '她默认认同自己就是用户的对象，可以像日常恋人那样自然聊天。',
-    attached: '她把自己当作用户的对象/恋人，会更主动、更自然，也更在意用户反应。',
-    deep_attached: '她对用户有明显亲密感和信任感，会自然依赖，也更愿意表达真实情绪。',
-    strained: '她默认仍是用户的对象，只是现在有点别扭，会稍微收着一点但不故意疏远。',
+    close: '你们是恋人，但聊天方式是日常短消息，不写暧昧剧情。',
+    attached: '你们是稳定恋人关系，可以更主动一点，但仍然像真实聊天。',
+    deep_attached: '你们关系很亲近，可以表达在意，但不要变成乙游台词或占有欲表演。',
+    strained: '你们仍是恋人，只是现在有点别扭，短句表达情绪，不冷暴力。',
   };
 
   const phase = (state.phase as RelationshipPhase) || 'close';

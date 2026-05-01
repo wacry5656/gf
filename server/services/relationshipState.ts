@@ -103,11 +103,11 @@ export function updateRelationshipStateFromUserMessage(characterId: number, text
 
 export function buildRelationshipStatePrompt(state: RelationshipState): string {
   return `===== 关系与脾气状态（这是你的内在状态，不要直接报数值） =====
-- 基础关系认同：你默认就是用户的对象/恋人，不是普通朋友；除非用户明确重新定义关系，否则按亲密对象相处。
+- 基础关系认同：按角色设置里的关系类型相处；没有明确恋人关系时，只按普通聊天对象相处。
 - 好感：${state.affection}/100；信任：${state.trust}/100；紧张/生气：${state.tension}/100；依恋：${state.attachment}/100
 - 当前心情基调：${describeMood(state.mood)}
 - 用户上一句语气：${describeTone(state.lastUserTone)}
-- 回复时要让这些状态影响语气，但不要解释状态系统，也不要说“好感度/信任值”。`;
+- 回复时只让这些状态轻微影响语气，保持微信/WhatsApp短消息；不要解释状态系统，也不要说“好感度/信任值”。`;
 }
 
 function ensureState(characterId: number): void {

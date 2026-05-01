@@ -2,6 +2,8 @@ export interface Character {
   id?: number;
   name: string;
   gender: 'male' | 'female' | 'other';
+  userGender?: 'male' | 'female';
+  relationshipMode?: 'lover' | 'friend';
   personality: string;
   description: string;
 }

@@ -101,8 +101,8 @@ export function shouldStoreAsMemory(text: string): boolean {
     if (rule.pattern.test(trimmed)) return true;
   }
 
-  // 15 字以上的消息有一定信息量
-  if (trimmed.length >= 15) return true;
+  // 12 字以上的消息有一定信息量；放宽写入，方便后续上下文召回。
+  if (trimmed.length >= 12) return true;
 
   return false;
 }
@@ -379,7 +379,8 @@ export async function searchMemory(
       .filter((item) =>
         item.semantic > threshold ||
         item.keywordScore >= memoryConfig.keywordRecallThreshold ||
-        (item.importance >= 5 && item.keywordScore > 0)
+        (item.importance >= 4 && item.keywordScore > 0) ||
+        item.importance >= 5
       )
       .sort((a, b) => (b.semantic + b.keywordScore) - (a.semantic + a.keywordScore))
       .slice(0, maxCandidates);

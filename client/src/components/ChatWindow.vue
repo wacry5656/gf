@@ -21,27 +21,47 @@ const chatBody = ref<HTMLElement | null>(null)
 const emotionInfo = ref<EmotionInfo | null>(null)
 const relationshipInfo = ref<RelationshipInfo | null>(null)
 
+function displayPersonality(raw: string): string {
+  const publicText = (raw || '')
+    .replace(/\s+/g, ' ')
+    .split(/[\n\r]|主动[:：]|回复节奏[:：]|边界[:：]|禁止旁白|禁止动作|禁止心理|系统规则|聊天规则/)[0]
+    ?.trim() || '自然聊天'
+  return publicText
+    .replace(/^(自然|温和|直率|轻松|克制|慢热)[:：]\s*/, '$1：')
+    .replace(/[。.]?$/, '')
+}
+
 const moodLabel = computed(() => emotionInfo.value?.moodLabel || '温柔')
-const phaseLabel = computed(() => relationshipInfo.value?.phaseLabel || '亲近')
+const phaseLabel = computed(() => {
+  if (props.character.relationshipMode === 'friend' && !relationshipInfo.value) return '熟悉'
+  return relationshipInfo.value?.phaseLabel || (props.character.relationshipMode === 'friend' ? '熟悉' : '亲近')
+})
 
 const relationshipHint = computed(() => {
+  if (props.character.relationshipMode === 'friend') {
+    return '普通聊天关系：只按日常微信/WhatsApp聊天，不触发恋爱和吃醋语气。'
+  }
   const phase = relationshipInfo.value?.phase
-  if (phase === 'deep_attached') return '默认恋人关系明确，回应会更主动、更依赖。'
-  if (phase === 'strained') return '关系有点别扭，但默认身份仍是你的对象。'
-  return '默认身份是你的对象/恋人，会按你们的互动继续升温。'
+  if (phase === 'deep_attached') return '恋人关系明确，但回复仍保持日常短消息，不写剧情。'
+  if (phase === 'strained') return '关系有点别扭，会短句表达情绪，不用沉默或动作代替回复。'
+  return '恋人关系：像真实聊天软件里的短消息，轻松自然。'
 })
+
+function clamp01(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
 
 const statusItems = computed(() => {
   const emotion = emotionInfo.value
   const relationship = relationshipInfo.value
+  const isFriend = props.character.relationshipMode === 'friend'
   return [
-    { label: '好感', value: emotion?.affection ?? 0.72, tone: 'rose' },
-    { label: '信任', value: emotion?.trust_score ?? relationship?.trust ?? 0.62, tone: 'blue' },
-    { label: '亲近', value: relationship?.closeness ?? 0.72, tone: 'violet' },
-    { label: '依赖', value: relationship?.dependence ?? 0.64, tone: 'green' },
-    { label: '安心', value: relationship?.comfort_level ?? 0.74, tone: 'amber' },
-    { label: '生气', value: emotion?.anger_score ?? 0, tone: 'red' },
-    { label: '吃醋', value: emotion?.jealousy_score ?? 0, tone: 'slate' },
+    { label: '好感', value: clamp01(emotion?.affection, isFriend ? 0.38 : 0.68), tone: 'rose' },
+    { label: '信任', value: clamp01(emotion?.trust_score ?? relationship?.trust, isFriend ? 0.52 : 0.58), tone: 'blue' },
+    { label: '亲近', value: clamp01(relationship?.closeness, isFriend ? 0.42 : 0.68), tone: 'violet' },
+    { label: isFriend ? '熟悉' : '依赖', value: clamp01(relationship?.dependence, isFriend ? 0.18 : 0.48), tone: 'green' },
+    { label: '安心', value: clamp01(relationship?.comfort_level, isFriend ? 0.56 : 0.68), tone: 'amber' },
   ]
 })
 
@@ -92,15 +112,13 @@ async function send() {
   loading.value = true
   streaming.value = false
 
-  if (props.character.id) {
-    saveMessage(props.character.id, 'user', text, props.userId).catch((e) => {
-      console.error('[ChatWindow] 保存用户消息失败:', e)
-    })
-  }
-
   let connected = false
 
   try {
+    if (props.character.id) {
+      await saveMessage(props.character.id, 'user', text, props.userId)
+    }
+
     let streamContent = ''
     const replies = await sendMessageStream(
       props.character,
@@ -146,6 +164,11 @@ async function send() {
 
 async function onClearHistory() {
   if (!props.character.id) return
+  if (loading.value) {
+    error.value = '回复生成中，等这次回复结束后再清空记录。'
+    return
+  }
+  if (!window.confirm('确定清空当前角色的全部聊天记录吗？')) return
   try {
     await clearMessages(props.character.id, props.userId)
     emit('update:messages', [])
@@ -175,7 +198,7 @@ function handleKeydown(e: KeyboardEvent) {
       <div class="identity-block">
         <div class="identity-kicker">当前对象</div>
         <h2>{{ character.name }}</h2>
-        <p>{{ character.personality }}</p>
+        <p>{{ displayPersonality(character.personality) }}</p>
       </div>
 
       <div class="state-list">
@@ -204,7 +227,12 @@ function handleKeydown(e: KeyboardEvent) {
           <h1>{{ character.name }}</h1>
         </div>
         <div class="header-actions">
-          <button v-if="messages.length > 0" class="tool-button" @click="onClearHistory">清空记录</button>
+          <button
+            v-if="messages.length > 0"
+            class="tool-button"
+            :disabled="loading"
+            @click="onClearHistory"
+          >清空记录</button>
         </div>
       </header>
 
@@ -441,6 +469,13 @@ function handleKeydown(e: KeyboardEvent) {
 .tool-button:hover {
   color: #d92d20;
   border-color: #f1a6a0;
+}
+
+.tool-button:disabled {
+  color: #98a2b3;
+  border-color: #d4dbe7;
+  cursor: not-allowed;
+  background: #f8fafc;
 }
 
 .chat-body {

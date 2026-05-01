@@ -6,6 +6,18 @@ import { ensureCharacterOwnership } from '../utils/ownership';
 
 export const dataRouter = Router();
 
+function userExists(userId: number): boolean {
+  if (!Number.isFinite(userId) || userId <= 0) return false;
+  return Boolean(db.prepare('SELECT id FROM users WHERE id = ?').get(userId));
+}
+
+function getCharacterRelationshipMode(characterId: number): 'lover' | 'friend' {
+  const row = db
+    .prepare('SELECT relationship_mode FROM characters WHERE id = ?')
+    .get(characterId) as { relationship_mode?: string } | undefined;
+  return row?.relationship_mode === 'friend' ? 'friend' : 'lover';
+}
+
 // ====== 角色管理 ======
 
 // 获取用户的所有角色
@@ -13,10 +25,19 @@ dataRouter.get('/characters', (req: Request, res: Response) => {
   try {
     const userId = req.query.userId as string;
     if (!userId) { res.status(400).json({ error: '缺少 userId' }); return; }
+    const numericUserId = Number(userId);
+    if (!userExists(numericUserId)) {
+      res.status(401).json({ error: '登录已失效，请重新登录' });
+      return;
+    }
 
     const characters = db.prepare(
-      'SELECT id, name, gender, personality, description, created_at FROM characters WHERE user_id = ? ORDER BY created_at DESC'
-    ).all(Number(userId));
+      `SELECT id, name, gender, user_gender AS userGender, relationship_mode AS relationshipMode,
+              personality, description, created_at
+       FROM characters
+       WHERE user_id = ?
+       ORDER BY created_at DESC`
+    ).all(numericUserId);
 
     res.json({ characters });
   } catch (err: any) {
@@ -28,12 +49,27 @@ dataRouter.get('/characters', (req: Request, res: Response) => {
 // 创建角色
 dataRouter.post('/characters', (req: Request, res: Response) => {
   try {
-    const { userId, name, gender, personality, description } = req.body;
+    const { userId, name, gender, userGender, relationshipMode, personality, description } = req.body;
     if (!userId || !name) { res.status(400).json({ error: '参数不完整' }); return; }
+    const numericUserId = Number(userId);
+    if (!userExists(numericUserId)) {
+      res.status(401).json({ error: '登录已失效，请重新登录' });
+      return;
+    }
 
     const result = db.prepare(
-      'INSERT INTO characters (user_id, name, gender, personality, description) VALUES (?, ?, ?, ?, ?)'
-    ).run(userId, name, gender || 'female', personality || '', description || '');
+      `INSERT INTO characters
+         (user_id, name, gender, user_gender, relationship_mode, personality, description)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      numericUserId,
+      name,
+      gender || 'female',
+      userGender || 'male',
+      relationshipMode || 'lover',
+      personality || '',
+      description || '',
+    );
 
     res.json({ characterId: result.lastInsertRowid });
   } catch (err: any) {
@@ -223,12 +259,13 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
 
     // 只读获取，不隐式创建
     const state = readEmotionState(userId, characterId);
+    const relationshipMode = getCharacterRelationshipMode(characterId);
     if (!state) {
       res.json({
         mood: 'warm',
         moodLabel: MOOD_LABEL['warm'],
-        affection: 0.72,
-        trust_score: 0.62,
+        affection: relationshipMode === 'friend' ? 0.38 : 0.68,
+        trust_score: relationshipMode === 'friend' ? 0.52 : 0.58,
         jealousy_score: 0,
         anger_score: 0,
       });
@@ -268,14 +305,15 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
 
     // 只读获取，不隐式创建
     const state = readRelationshipState(userId, characterId);
+    const relationshipMode = getCharacterRelationshipMode(characterId);
     if (!state) {
       res.json({
-        phase: 'attached',
-        phaseLabel: PHASE_LABEL['attached'],
-        closeness: 0.72,
-        trust: 0.62,
-        dependence: 0.64,
-        comfort_level: 0.74,
+        phase: relationshipMode === 'friend' ? 'close' : 'attached',
+        phaseLabel: relationshipMode === 'friend' ? PHASE_LABEL['close'] : PHASE_LABEL['attached'],
+        closeness: relationshipMode === 'friend' ? 0.42 : 0.68,
+        trust: relationshipMode === 'friend' ? 0.52 : 0.58,
+        dependence: relationshipMode === 'friend' ? 0.18 : 0.48,
+        comfort_level: relationshipMode === 'friend' ? 0.56 : 0.68,
       });
       return;
     }
