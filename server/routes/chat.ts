@@ -7,6 +7,7 @@ import { maybeExtractPersonality, getUserIdFromCharacter, getPersonalityTraits }
 import { getEmotionState, updateEmotionState, buildEmotionPrompt } from '../services/emotion';
 import type { Mood } from '../services/emotion';
 import { getRelationshipState, updateRelationshipState, buildRelationshipPrompt } from '../services/relationship';
+import { auditInteraction } from '../services/interactionAudit';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
 import { estimateTokens, fitRecentMessagesToBudget, trimToTokenBudget, totalMessageTokens } from '../utils/tokenBudget';
@@ -109,17 +110,18 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
       if (!charExists) {
         console.warn(`[Chat] characterId=${characterId} 不存在，降级为临时聊天`);
         // 角色不存在时降级为临时聊天（不使用记忆系统）
-        const systemContent = buildSystemPrompt({ character });
+        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+        const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
+        const systemContent = buildSystemPrompt({ character, interactionPrompt });
         const recentMessages = fitRecentMessagesToBudget(
           messages.slice(-memoryConfig.recentMessageLimit),
           memoryConfig.recentTokenBudget,
           memoryConfig.singleMessageTokenBudget
         ) as ChatMessage[];
         const fullMessages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...recentMessages];
-        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
         const maxTokens = getMaxTokens(currentUserText);
         const rawReply = await callQwenAPI(fullMessages, maxTokens);
-        const cleaned = cleanReply(rawReply);
+        const cleaned = cleanReply(rawReply, currentUserText, character.relationshipMode || 'lover');
         const replies = splitReply(cleaned);
         res.json({ reply: replies.join('\n'), replies });
         return;
@@ -140,7 +142,7 @@ chatRouter.post('/chat', async (req: Request, res: Response) => {
     const apiStart = Date.now();
     const rawReply = await callQwenAPI(fullMessages, maxTokens);
     console.log(`[Perf] Qwen API 非流式调用耗时: ${Date.now() - apiStart}ms`);
-    const cleaned = cleanReply(rawReply);
+    const cleaned = cleanReply(rawReply, currentUserText, character.relationshipMode || 'lover');
     const replies = splitReply(cleaned);
 
     // 异步：写入记忆 + 计划完成检测 + 触发 summary 更新 + 人格提取 + 情绪更新 + 关系更新（都不阻塞响应）
@@ -204,7 +206,9 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
       if (!charExists) {
         console.warn(`[Chat/Stream] characterId=${characterId} 不存在，降级为临时聊天`);
         // 角色不存在时降级为临时聊天
-        const systemContent = buildSystemPrompt({ character });
+        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
+        const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
+        const systemContent = buildSystemPrompt({ character, interactionPrompt });
         const recentMessages = fitRecentMessagesToBudget(
           messages.slice(-memoryConfig.recentMessageLimit),
           memoryConfig.recentTokenBudget,
@@ -215,7 +219,6 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
         setupSSE(res);
         console.log(`[Chat/Stream][degraded] ready 已发送`);
 
-        const currentUserText = messages.filter(m => m.role === 'user').pop()?.content || '';
         const maxTokens = getMaxTokens(currentUserText);
         const controller = new AbortController();
         let firstChunkSent = false;
@@ -256,7 +259,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
             maxTokens
           );
           clearInterval(degradedHeartbeat);
-          const cleaned = cleanReply(fullReply);
+          const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover');
           const replies = splitReply(cleaned);
           if (!controller.signal.aborted) {
             writeDone(res, replies);
@@ -348,7 +351,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
     }
 
     // Clean and split the full reply
-    const cleaned = cleanReply(fullReply);
+    const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover');
     const replies = splitReply(cleaned);
 
     if (!controller.signal.aborted) {
@@ -465,7 +468,9 @@ async function buildChatContext(
 
   // 如果没有 characterId，退化为纯短期模式
   if (!characterId) {
-    const systemContent = buildSystemPrompt({ character });
+    const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
+    const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
+    const systemContent = buildSystemPrompt({ character, interactionPrompt });
     return finalizeContext([{ role: 'system', content: systemContent }, ...recentMessages]);
   }
 
@@ -473,6 +478,7 @@ async function buildChatContext(
   let usedChars = 0;
 
   const currentUserText = recentMessages.filter(m => m.role === 'user').pop()?.content || '';
+  const interactionPrompt = buildInteractionPrompt(currentUserText, character.relationshipMode || 'lover');
 
   // ---- 并行获取 summary、memories、personality、emotion 和 relationship ----
   let summaryElapsed = 0;
@@ -572,6 +578,7 @@ async function buildChatContext(
     emotionPrompt,
     emotionMood: emotionResult?.mood,
     relationshipPrompt,
+    interactionPrompt,
   });
 
   // ---- 层3：summary block（追加到 system prompt 后）----
@@ -667,6 +674,7 @@ interface SystemPromptParams {
   emotionPrompt?: string;
   emotionMood?: Mood;
   relationshipPrompt?: string;
+  interactionPrompt?: string;
 }
 
 interface PersonalityStyleProfile {
@@ -846,12 +854,48 @@ function resolveRelationshipRules(character: ChatRequestBody['character']): stri
   ];
 }
 
+function buildInteractionPrompt(currentUserText: string, relationshipMode: 'lover' | 'friend'): string | undefined {
+  if (!currentUserText.trim()) return undefined;
+  const audit = auditInteraction(currentUserText, relationshipMode);
+  const rules: string[] = [];
+
+  if (audit.reassuranceSeeking) {
+    rules.push('用户在索取确认感，直接短答并给一点确定感，不要反问，不要顺势提高亲密度。');
+  }
+  if (audit.intimateExpression && !audit.reassuranceSeeking && !audit.canIncreaseBond) {
+    rules.push('用户只是亲密表达，接住即可，不要自我感动、不要升级剧情。');
+  }
+  if (audit.canIncreaseBond) {
+    rules.push('用户有真实关心、修复或承诺，先自然接住，再给一句具体回应。');
+  }
+  if (audit.partnerConflict) {
+    rules.push('用户提出分手、另有对象或替换关系，要表达受伤/边界，但仍用短消息正常沟通。');
+  } else if (audit.thirdParty) {
+    rules.push('用户提到第三者，只轻微表达在意，不控制、不阴阳怪气。');
+  }
+  if (audit.attack || audit.cold) {
+    rules.push('用户语气冷淡或攻击，回复更短，指出具体感受，不辱骂、不冷暴力。');
+  }
+  if (audit.isQuestion && rules.length === 0) {
+    rules.push('用户在问问题，第一句必须直接回答。');
+  }
+  if (rules.length === 0) {
+    rules.push('按最近一句自然接话，不主动扩写剧情。');
+  }
+
+  return [
+    `当前用户消息：${currentUserText.slice(0, 80)}`,
+    `识别：${audit.primaryEvent || '普通聊天'}`,
+    ...rules.map(rule => `- ${rule}`),
+  ].join('\n');
+}
+
 /**
  * 构建统一的 system prompt（单一入口，不允许碎片拼接）
  *
  * 整合：角色设定 + 女友人格 + 关系状态 + 情绪状态 + 行为约束
  */
-function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emotionMood, relationshipPrompt }: SystemPromptParams): string {
+function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emotionMood, relationshipPrompt, interactionPrompt }: SystemPromptParams): string {
   const personalityStyle = resolvePersonalityStyle(character.personality, character.description);
   const emotionBlock = emotionPrompt || '当前情绪稳定，正常聊天。';
   const relationshipBlock = relationshipPrompt || (character.relationshipMode === 'friend'
@@ -875,6 +919,7 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
     personalitySummary ? `【长期特征】\n${personalitySummary}` : '',
     `【情绪】\n${emotionBlock}\n规则：\n${emotionRules}\n只调语气强弱和主动性，不改人格。`,
     `【关系】\n${relationshipBlock}\n规则：\n${relationshipRules}`,
+    interactionPrompt ? `【当前这句话的接法】\n${interactionPrompt}` : '',
     `【输出】\n${outputRules}\n- 问句必须直接回答\n- 每条消息像真实聊天气泡，短、口语、具体\n- 可以少量语气词或 emoji，但不要每句都用\n- 禁止开头使用省略号\n- 绝对禁止旁白、动作、神态、心理描写，例如“我抬眼”“看着你”“没说话”“沉默了一下”“呼吸声很轻”“突然骂人”\n- 禁止睡眠/呼吸/沉默/发呆/看着对方这类状态句\n- 禁止无理由骂用户；生气也只能说具体不满\n- 禁止用“……”或沉默代替回复\n- 禁止解释规则\n- 禁止暴露AI身份\n- 输出前自检：如果这句话不能直接发进微信聊天框，就改写\n【坏例子，绝对不要这样输出】\n- ...睡着了？\n- 呼吸声很轻。\n- 我抬眼，没说话。\n- 突然骂人。\n- 嗯？\n【改写方向】\n- 没睡，我在\n- 我在听，你继续说\n- 怎么突然这么说？\n- 你刚刚这句有点凶`,
   ].filter(Boolean).join('\n');
 
@@ -884,9 +929,9 @@ function buildSystemPrompt({ character, personalitySummary, emotionPrompt, emoti
 /**
  * 清理 AI 回复中的动作描写、括号内容等
  */
-function cleanReply(text: string): string {
+function cleanReply(text: string, currentUserText = '', relationshipMode: 'lover' | 'friend' = 'lover'): string {
   let cleaned = text;
-  const fallbackReply = '我在';
+  const fallbackReply = buildFallbackReply(currentUserText, relationshipMode);
 
   // 去掉各种括号内容：（动作）、(动作)、*动作*、【动作】
   cleaned = cleaned.replace(/[（(][^）)]*[）)]/g, '');
@@ -920,6 +965,17 @@ function cleanReply(text: string): string {
     .trim();
 
   return cleaned || fallbackReply;
+}
+
+function buildFallbackReply(currentUserText: string, relationshipMode: 'lover' | 'friend'): string {
+  if (!currentUserText.trim()) return '我在';
+  const audit = auditInteraction(currentUserText, relationshipMode);
+  if (audit.partnerConflict) return '你这样说，我会难受';
+  if (audit.attack || audit.cold) return '你刚刚这句有点伤人';
+  if (audit.reassuranceSeeking) return relationshipMode === 'lover' ? '想啊，我在' : '在，我记得你';
+  if (audit.intimateExpression) return relationshipMode === 'lover' ? '我也在想你' : '我在呢';
+  if (audit.isQuestion) return '在，你说';
+  return '我在听';
 }
 
 function isBadChatLine(line: string): boolean {

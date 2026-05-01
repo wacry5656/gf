@@ -65,6 +65,17 @@ function delta(value: number, text: string): number {
   return value * sensitivity() * lengthBoost;
 }
 
+function positiveChangeFactor(currentValue: number, lastTrigger: string | null, updatedAt: string, nextTrigger: string | null): number {
+  const headroom = 0.35 + 0.65 * (1 - clamp(currentValue));
+  if (!lastTrigger || !nextTrigger || lastTrigger !== nextTrigger) return headroom;
+  const updated = Date.parse(`${updatedAt.replace(' ', 'T')}Z`);
+  if (!Number.isFinite(updated)) return headroom;
+  const minutes = (Date.now() - updated) / 60000;
+  if (minutes < 30) return headroom * 0.3;
+  if (minutes < 360) return headroom * 0.6;
+  return headroom;
+}
+
 function pickMood(candidates: Mood[], current: Mood, stability: number): Mood {
   // stability 越高越不容易跳变；随机因子让表现不那么死板
   if (Math.random() < stability * 0.6) return current;
@@ -214,8 +225,9 @@ export function updateEmotionState(
   // 规则4：通过审核的真实关心/修复/承诺才小幅增长。
   if (audit.canIncreaseBond) {
     const scoreBoost = Math.min(1.5, audit.positiveScore) / 1.5;
-    affection += delta(0.018 + 0.02 * scoreBoost, userInput);
-    trust_score += delta(0.028 + 0.025 * scoreBoost, userInput);
+    const changeFactor = positiveChangeFactor(affection, state.last_trigger, state.updated_at, audit.primaryEvent);
+    affection += delta(0.018 + 0.02 * scoreBoost, userInput) * changeFactor;
+    trust_score += delta(0.028 + 0.025 * scoreBoost, userInput) * changeFactor;
     anger_score -= delta(0.06, userInput);
     mood = pickMood(['caring', 'warm', 'shy'], mood, stability_score);
     trigger = audit.primaryEvent || '正向互动';

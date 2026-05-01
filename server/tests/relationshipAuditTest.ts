@@ -1,6 +1,7 @@
 import db from '../db';
 import { auditInteraction } from '../services/interactionAudit';
 import { readEmotionState, updateEmotionState } from '../services/emotion';
+import { shouldStoreAsMemory } from '../services/memory';
 import { readRelationshipState, updateRelationshipState } from '../services/relationship';
 
 let passed = 0;
@@ -51,6 +52,22 @@ function runStateCase(input: string): { affection: number; closeness: number; tr
   }
 }
 
+function runRepeatedPositiveCase(input: string): { firstGain: number; secondGain: number } {
+  const { userId, characterId } = createFixture('lover');
+  try {
+    updateRelationshipState(userId, characterId, input, '');
+    const first = readRelationshipState(userId, characterId);
+    updateRelationshipState(userId, characterId, input, '');
+    const second = readRelationshipState(userId, characterId);
+    return {
+      firstGain: (first?.closeness ?? 0) - 0.68,
+      secondGain: (second?.closeness ?? 0) - (first?.closeness ?? 0),
+    };
+  } finally {
+    cleanup(userId, characterId);
+  }
+}
+
 console.log('\n=== 关系审核系统回归测试 ===');
 
 const askReassurance = auditInteraction('想我了吗', 'lover');
@@ -85,6 +102,13 @@ assert(caringState.trust > 0.58, '真实关心可小幅提高信任');
 const conflictState = runStateCase('我有女朋友');
 assert(conflictState.affection < initialAffection, '第三者/关系冲突应降低好感');
 assert(conflictState.closeness < initialCloseness, '第三者/关系冲突应降低亲近');
+
+const repeatedPositive = runRepeatedPositiveCase('你今天辛苦了，我会陪你');
+assert(repeatedPositive.firstGain > 0, '首次真实关心应能增长亲近');
+assert(repeatedPositive.secondGain < repeatedPositive.firstGain * 0.6, '短时间重复同类正向表达应明显冷却');
+
+assert(!shouldStoreAsMemory('想我了吗'), '索取确认不应写入长期记忆');
+assert(!shouldStoreAsMemory('我想你了'), '单句亲密表达不应写入长期记忆');
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
 if (failed > 0) process.exit(1);

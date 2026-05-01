@@ -62,6 +62,17 @@ function delta(value: number, text: string): number {
   return value * sensitivity() * lengthBoost;
 }
 
+function positiveChangeFactor(currentValue: number, lastEvent: string | null, updatedAt: string, nextEvent: string | null): number {
+  const headroom = 0.35 + 0.65 * (1 - clamp(currentValue));
+  if (!lastEvent || !nextEvent || lastEvent !== nextEvent) return headroom;
+  const updated = Date.parse(`${updatedAt.replace(' ', 'T')}Z`);
+  if (!Number.isFinite(updated)) return headroom;
+  const minutes = (Date.now() - updated) / 60000;
+  if (minutes < 30) return headroom * 0.3;
+  if (minutes < 360) return headroom * 0.6;
+  return headroom;
+}
+
 function determinePhase(closeness: number, trust: number, comfortLevel: number): RelationshipPhase {
   if (trust < 0.35 || comfortLevel < 0.35) return 'strained';
   if (closeness >= 0.75 && trust >= 0.7) return 'deep_attached';
@@ -159,10 +170,11 @@ export function updateRelationshipState(
   // 规则2：通过审核的真实关心/修复/承诺才小幅增长。
   if (audit.canIncreaseBond) {
     const scoreBoost = Math.min(1.5, audit.positiveScore) / 1.5;
-    trust += delta(0.025 + 0.025 * scoreBoost, userInput);
-    closeness += delta(0.014 + 0.018 * scoreBoost, userInput);
-    comfort_level += delta(0.024 + 0.024 * scoreBoost, userInput);
-    dependence += delta(0.008 + 0.012 * scoreBoost, userInput);
+    const changeFactor = positiveChangeFactor(closeness, state.last_event, state.updated_at, audit.primaryEvent);
+    trust += delta(0.025 + 0.025 * scoreBoost, userInput) * changeFactor;
+    closeness += delta(0.014 + 0.018 * scoreBoost, userInput) * changeFactor;
+    comfort_level += delta(0.024 + 0.024 * scoreBoost, userInput) * changeFactor;
+    dependence += delta(0.008 + 0.012 * scoreBoost, userInput) * changeFactor;
     lastEvent = audit.primaryEvent || '正向互动';
   }
 
