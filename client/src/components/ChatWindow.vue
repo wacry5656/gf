@@ -12,6 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:messages': [messages: ChatMessage[]]
+  'back': []
 }>()
 
 const inputText = ref('')
@@ -21,6 +22,7 @@ const error = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 const emotionInfo = ref<EmotionInfo | null>(null)
 const relationshipInfo = ref<RelationshipInfo | null>(null)
+const showMobilePanel = ref(false)
 let statusRequestId = 0
 
 function displayPersonality(raw: string): string {
@@ -29,9 +31,18 @@ function displayPersonality(raw: string): string {
     .split(/[\n\r]|主动[:：]|回复节奏[:：]|边界[:：]|禁止旁白|禁止动作|禁止心理|系统规则|聊天规则/)[0]
     ?.trim() || '自然聊天'
   return publicText
-    .replace(/^(自然|温和|直率|轻松|克制|慢热)[:：]\s*/, '$1：')
+    .replace(/^(自然|温和|直率|轻松|克制|慢热|毒舌)[:：]\s*/, '$1：')
     .replace(/[。.]?$/, '')
 }
+
+const moodEmoji = computed(() => {
+  const map: Record<string, string> = {
+    warm: '😊', happy: '😄', playful: '😏', shy: '🫣',
+    caring: '🤗', upset: '😤', jealous: '😒', distant: '😶',
+    sulking: '😠', disappointed: '😞', anticipating: '✨',
+  }
+  return map[emotionInfo.value?.mood || 'warm'] || '😊'
+})
 
 const moodLabel = computed(() => emotionInfo.value?.moodLabel || '温柔')
 const phaseLabel = computed(() => {
@@ -41,20 +52,20 @@ const phaseLabel = computed(() => {
 
 const relationshipHint = computed(() => {
   if (props.character.relationshipMode === 'friend') {
-    return '熟悉的日常聊天对象，回复会保持自然克制。'
+    return '你的日常聊天搭子'
   }
   const phase = relationshipInfo.value?.phase
-  if (phase === 'deep_attached') return '关系很亲近，聊天仍然偏日常。'
-  if (phase === 'strained') return '现在有点别扭，需要慢慢聊开。'
-  return '稳定的日常关系，轻松自然地聊天。'
+  if (phase === 'deep_attached') return '你们很亲密'
+  if (phase === 'strained') return '最近有点别扭'
+  return '日常相处中'
 })
 
 const emptyCopy = computed(() => {
   const pronoun = props.character.gender === 'male' ? '他' : props.character.gender === 'female' ? '她' : '对方'
   if (props.character.relationshipMode === 'friend') {
-    return `${pronoun}会按你们的记忆、熟悉度和最近的话题继续回应。`
+    return `给${pronoun}发条消息开始聊天吧`
   }
-  return `${pronoun}会按你们的记忆、关系和情绪继续回应。`
+  return `给${pronoun}发条消息吧`
 })
 
 function clamp01(value: number | undefined, fallback: number): number {
@@ -67,11 +78,11 @@ const statusItems = computed(() => {
   const relationship = relationshipInfo.value
   const isFriend = props.character.relationshipMode === 'friend'
   return [
-    { label: '好感', value: clamp01(emotion?.affection, isFriend ? 0.38 : 0.68), tone: 'rose' },
-    { label: '信任', value: clamp01(emotion?.trust_score ?? relationship?.trust, isFriend ? 0.52 : 0.58), tone: 'blue' },
-    { label: '亲近', value: clamp01(relationship?.closeness, isFriend ? 0.42 : 0.68), tone: 'violet' },
-    { label: isFriend ? '熟悉' : '依赖', value: clamp01(relationship?.dependence, isFriend ? 0.18 : 0.48), tone: 'green' },
-    { label: '安心', value: clamp01(relationship?.comfort_level, isFriend ? 0.56 : 0.68), tone: 'amber' },
+    { label: '好感', value: clamp01(emotion?.affection, isFriend ? 0.38 : 0.65), tone: 'rose', icon: '♥' },
+    { label: '信任', value: clamp01(emotion?.trust_score ?? relationship?.trust, isFriend ? 0.52 : 0.55), tone: 'blue', icon: '🤝' },
+    { label: '亲近', value: clamp01(relationship?.closeness, isFriend ? 0.42 : 0.65), tone: 'violet', icon: '✦' },
+    { label: isFriend ? '熟悉' : '依赖', value: clamp01(relationship?.dependence, isFriend ? 0.18 : 0.45), tone: 'green', icon: '◈' },
+    { label: '安心', value: clamp01(relationship?.comfort_level, isFriend ? 0.56 : 0.65), tone: 'amber', icon: '☀' },
   ]
 })
 
@@ -245,46 +256,94 @@ function handleKeydown(e: KeyboardEvent) {
     send()
   }
 }
+
+/* unused */
 </script>
 
 <template>
   <div class="chat-shell">
-    <aside class="companion-panel">
-      <div class="portrait">
-        <div class="portrait-glow"></div>
-        <div class="portrait-initial">{{ character.name.slice(0, 1) }}</div>
-      </div>
-
-      <div class="identity-block">
-        <div class="identity-kicker">当前对象</div>
-        <h2>{{ character.name }}</h2>
-        <p>{{ displayPersonality(character.personality) }}</p>
-      </div>
-
-      <div class="state-list">
-        <div class="state-row" v-for="item in statusItems" :key="item.label">
-          <div class="state-meta">
-            <span>{{ item.label }}</span>
-            <strong>{{ Math.round(item.value * 100) }}</strong>
+    <!-- Mobile panel overlay -->
+    <Transition name="slide">
+      <div v-if="showMobilePanel" class="mobile-panel-overlay" @click="showMobilePanel = false">
+        <div class="mobile-panel" @click.stop>
+          <div class="mobile-panel-header">
+            <div class="mobile-portrait">
+              <div class="mobile-portrait-initial">{{ character.name.slice(0, 1) }}</div>
+            </div>
+            <h3>{{ character.name }}</h3>
+            <p class="mobile-personality">{{ displayPersonality(character.personality) }}</p>
           </div>
-          <div class="state-track">
-            <div class="state-fill" :class="`tone-${item.tone}`" :style="{ width: `${Math.round(item.value * 100)}%` }"></div>
+          <div class="mobile-status">
+            <div class="mobile-status-row" v-for="item in statusItems" :key="item.label">
+              <span class="mobile-status-label">{{ item.icon }} {{ item.label }}</span>
+              <div class="mobile-status-bar">
+                <div class="mobile-status-fill" :class="`tone-${item.tone}`" :style="{ width: `${Math.round(item.value * 100)}%` }"></div>
+              </div>
+              <span class="mobile-status-val">{{ Math.round(item.value * 100) }}</span>
+            </div>
+          </div>
+          <div class="mobile-tags">
+            <span class="mobile-tag">{{ moodEmoji }} {{ moodLabel }}</span>
+            <span class="mobile-tag">{{ phaseLabel }}</span>
+          </div>
+          <p class="mobile-hint">{{ relationshipHint }}</p>
+          <button class="mobile-panel-close" @click="showMobilePanel = false">关闭</button>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Desktop sidebar -->
+    <aside class="companion-panel">
+      <div class="panel-section">
+        <div class="portrait">
+          <div class="portrait-ring"></div>
+          <div class="portrait-initial">{{ character.name.slice(0, 1) }}</div>
+        </div>
+        <div class="identity-block">
+          <div class="identity-name">{{ character.name }}</div>
+          <div class="identity-personality">{{ displayPersonality(character.personality) }}</div>
+        </div>
+      </div>
+
+      <div class="panel-divider"></div>
+
+      <div class="panel-section">
+        <div class="section-title">
+          <span>状态</span>
+          <div class="mood-badge">{{ moodEmoji }} {{ moodLabel }}</div>
+        </div>
+        <div class="state-list">
+          <div class="state-row" v-for="item in statusItems" :key="item.label">
+            <div class="state-bar-wrap">
+              <span class="state-label">{{ item.icon }} {{ item.label }}</span>
+              <div class="state-track">
+                <div class="state-fill" :class="`tone-${item.tone}`" :style="{ width: `${Math.round(item.value * 100)}%` }"></div>
+              </div>
+              <span class="state-val">{{ Math.round(item.value * 100) }}</span>
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="relationship-note">
-        <span>{{ moodLabel }}</span>
-        <span>{{ phaseLabel }}</span>
-        <p>{{ relationshipHint }}</p>
+      <div class="panel-divider"></div>
+
+      <div class="panel-section panel-footer">
+        <div class="relationship-badge">
+          <span class="badge-phase">{{ phaseLabel }}</span>
+        </div>
+        <p class="relationship-hint">{{ relationshipHint }}</p>
       </div>
     </aside>
 
+    <!-- Chat area -->
     <section class="conversation">
       <header class="conversation-header">
-        <div>
-          <div class="header-kicker">正在聊天</div>
-          <h1>{{ character.name }}</h1>
+        <button class="btn-back-mobile" @click="$emit('back')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        </button>
+        <div class="header-center" @click="showMobilePanel = true">
+          <span class="header-name">{{ character.name }}</span>
+          <span class="header-status">{{ moodEmoji }} {{ moodLabel }} · {{ phaseLabel }}</span>
         </div>
         <div class="header-actions">
           <button
@@ -292,13 +351,14 @@ function handleKeydown(e: KeyboardEvent) {
             class="tool-button"
             :disabled="loading"
             @click="onClearHistory"
-          >清空记录</button>
+          >清空</button>
         </div>
       </header>
 
       <div class="chat-body" ref="chatBody">
         <div v-if="messages.length === 0" class="empty-state">
-          <div class="empty-title">对话还没有开始</div>
+          <div class="empty-avatar">{{ character.name.slice(0, 1) }}</div>
+          <div class="empty-title">{{ character.name }}</div>
           <div class="empty-copy">{{ emptyCopy }}</div>
         </div>
 
@@ -306,20 +366,28 @@ function handleKeydown(e: KeyboardEvent) {
           v-for="(msg, i) in messages"
           :key="i"
           :class="[
-            'message',
-            msg.role === 'user' ? 'message-user' : 'message-assistant',
-            i > 0 && messages[i - 1].role === msg.role ? 'message-consecutive' : ''
+            'msg',
+            msg.role === 'user' ? 'msg-user' : 'msg-bot',
+            i > 0 && messages[i - 1].role === msg.role ? 'msg-consecutive' : ''
           ]"
         >
-          <div v-if="!(i > 0 && messages[i - 1].role === msg.role)" class="message-label">
-            {{ msg.role === 'user' ? '你' : character.name }}
+          <div v-if="!(i > 0 && messages[i - 1].role === msg.role)" class="msg-avatar">
+            {{ msg.role === 'user' ? '你' : character.name.slice(0, 1) }}
           </div>
-          <div class="message-bubble">{{ msg.content }}</div>
+          <div class="msg-bubble-wrap" :class="{ 'no-avatar': i > 0 && messages[i - 1].role === msg.role }">
+            <div v-if="!(i > 0 && messages[i - 1].role === msg.role) && msg.role === 'assistant'" class="msg-name">{{ character.name }}</div>
+            <div class="msg-bubble">{{ msg.content }}</div>
+          </div>
         </div>
 
-        <div v-if="loading && !streaming" class="message message-assistant">
-          <div class="message-label">{{ character.name }}</div>
-          <div class="message-bubble typing">正在想怎么回你...</div>
+        <div v-if="loading && !streaming" class="msg msg-bot">
+          <div class="msg-avatar">{{ character.name.slice(0, 1) }}</div>
+          <div class="msg-bubble-wrap">
+            <div class="msg-name">{{ character.name }}</div>
+            <div class="msg-bubble typing">
+              <span class="typing-dots"><span></span><span></span><span></span></span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -329,12 +397,12 @@ function handleKeydown(e: KeyboardEvent) {
         <textarea
           v-model="inputText"
           @keydown="handleKeydown"
-          placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+          placeholder="输入消息..."
           rows="1"
           :disabled="loading"
         ></textarea>
         <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
-          {{ loading ? '发送中' : '发送' }}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13M22 2L15 22 11 13 2 9 22 2Z"/></svg>
         </button>
       </footer>
     </section>
@@ -342,350 +410,652 @@ function handleKeydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+/* ====== Layout Shell ====== */
 .chat-shell {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  background: #eef1f4;
+  grid-template-columns: 300px minmax(0, 1fr);
+  background: #f0f2f5;
   overflow: hidden;
 }
 
+/* ====== Sidebar Panel ====== */
 .companion-panel {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 24px;
   background: #fff;
-  border-right: 1px solid #dde3ec;
+  border-right: 1px solid #e5e7eb;
   overflow-y: auto;
 }
 
-.portrait {
-  position: relative;
-  width: 148px;
-  aspect-ratio: 1;
-  margin: 4px auto 0;
-  display: grid;
-  place-items: center;
+.panel-section {
+  padding: 20px 20px 16px;
 }
 
-.portrait-glow {
+.panel-section.panel-footer {
+  margin-top: auto;
+  padding-bottom: 20px;
+}
+
+.panel-divider {
+  height: 1px;
+  background: #f0f2f5;
+  margin: 0 20px;
+}
+
+/* Portrait */
+.portrait {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 14px;
+}
+
+.portrait-ring {
   position: absolute;
   inset: 0;
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at 28% 24%, rgba(255, 116, 150, 0.32), transparent 34%),
-    radial-gradient(circle at 78% 68%, rgba(92, 111, 255, 0.26), transparent 38%),
-    linear-gradient(135deg, #fff7fb, #edf4ff);
-  border: 1px solid rgba(170, 183, 205, 0.55);
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.15), rgba(233, 95, 128, 0.15));
 }
 
 .portrait-initial {
   position: relative;
-  width: 84px;
-  aspect-ratio: 1;
-  border-radius: 24px;
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
   display: grid;
   place-items: center;
-  background: #172033;
+  background: linear-gradient(135deg, #1e1b4b, #312e81);
   color: #fff;
-  font-size: 2rem;
+  font-size: 1.65rem;
   font-weight: 800;
-  box-shadow: 0 18px 32px rgba(23, 32, 51, 0.22);
 }
 
 .identity-block {
   text-align: center;
 }
 
-.identity-kicker,
-.header-kicker {
-  font-size: 0.75rem;
-  color: #7c8798;
+.identity-name {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #111827;
 }
 
-.identity-block h2,
-.conversation-header h1 {
-  margin: 4px 0 0;
-  color: #172033;
-  font-size: 1.35rem;
+.identity-personality {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+/* Section Title */
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mood-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ede9fe, #fce7f3);
+  color: #6b21a8;
+  text-transform: none;
   letter-spacing: 0;
 }
 
-.identity-block p {
-  margin: 8px 0 0;
-  color: #667085;
-  font-size: 0.9rem;
-  line-height: 1.5;
-}
-
+/* State Bars */
 .state-list {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .state-row {
   min-width: 0;
 }
 
-.state-meta {
+.state-bar-wrap {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
-  color: #344054;
-  font-size: 0.82rem;
+  gap: 8px;
 }
 
-.state-meta strong {
-  font-size: 0.82rem;
-  color: #172033;
+.state-label {
+  width: 52px;
+  font-size: 0.78rem;
+  color: #6b7280;
+  flex-shrink: 0;
 }
 
 .state-track {
-  height: 8px;
+  flex: 1;
+  height: 6px;
   border-radius: 999px;
-  background: #e8edf3;
+  background: #f3f4f6;
   overflow: hidden;
 }
 
 .state-fill {
   height: 100%;
   border-radius: inherit;
-  transition: width 0.25s ease;
+  transition: width 0.4s ease;
 }
 
-.tone-rose { background: #e95f80; }
-.tone-blue { background: #4b7bec; }
-.tone-violet { background: #7c5cff; }
-.tone-green { background: #35a66f; }
-.tone-amber { background: #d99328; }
-.tone-red { background: #d14343; }
-.tone-slate { background: #64748b; }
-
-.relationship-note {
-  border: 1px solid #e3e8ef;
-  border-radius: 8px;
-  padding: 14px;
-  background: #f8fafc;
+.state-val {
+  width: 26px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  text-align: right;
 }
 
-.relationship-note span {
-  display: inline-flex;
-  margin: 0 6px 8px 0;
-  padding: 3px 9px;
+.tone-rose { background: linear-gradient(90deg, #fb7185, #e11d48); }
+.tone-blue { background: linear-gradient(90deg, #60a5fa, #2563eb); }
+.tone-violet { background: linear-gradient(90deg, #a78bfa, #7c3aed); }
+.tone-green { background: linear-gradient(90deg, #4ade80, #16a34a); }
+.tone-amber { background: linear-gradient(90deg, #fbbf24, #d97706); }
+
+/* Relationship Badge */
+.relationship-badge {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.badge-phase {
+  font-size: 0.78rem;
+  padding: 3px 12px;
   border-radius: 999px;
-  background: #fff;
-  color: #344054;
-  border: 1px solid #e3e8ef;
-  font-size: 0.76rem;
+  background: #f3f4f6;
+  color: #374151;
+  font-weight: 600;
 }
 
-.relationship-note p {
+.relationship-hint {
   margin: 0;
-  color: #667085;
-  line-height: 1.5;
-  font-size: 0.84rem;
+  font-size: 0.82rem;
+  color: #9ca3af;
+  line-height: 1.4;
 }
 
+/* ====== Conversation Area ====== */
 .conversation {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(244, 247, 251, 0.96)),
-    #f5f7fa;
+  background: #f0f2f5;
 }
 
 .conversation-header {
-  min-height: 72px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 22px;
-  background: rgba(255, 255, 255, 0.92);
-  border-bottom: 1px solid #dde3ec;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
   flex-shrink: 0;
+}
+
+.header-center {
+  flex: 1;
+  text-align: center;
+  cursor: pointer;
+}
+
+.header-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+.header-status {
+  display: block;
+  font-size: 0.72rem;
+  color: #9ca3af;
+  margin-top: 1px;
+}
+
+.btn-back-mobile {
+  display: none;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: #6b7280;
 }
 
 .header-actions {
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .tool-button {
-  height: 34px;
-  padding: 0 13px;
-  border: 1px solid #d4dbe7;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #fff;
-  color: #667085;
+  color: #6b7280;
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+  transition: all 0.15s;
 }
 
 .tool-button:hover {
-  color: #d92d20;
-  border-color: #f1a6a0;
+  color: #ef4444;
+  border-color: #fca5a5;
+  background: #fef2f2;
 }
 
 .tool-button:disabled {
-  color: #98a2b3;
-  border-color: #d4dbe7;
+  color: #d1d5db;
+  border-color: #e5e7eb;
   cursor: not-allowed;
-  background: #f8fafc;
+  background: #f9fafb;
 }
 
+/* ====== Chat Messages ====== */
 .chat-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 24px;
+  padding: 16px 16px 8px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
 }
 
 .empty-state {
   align-self: center;
-  margin-top: 20vh;
-  max-width: 420px;
+  margin-top: 18vh;
+  max-width: 300px;
   text-align: center;
-  color: #667085;
+}
+
+.empty-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #1e1b4b, #312e81);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 1.4rem;
+  font-weight: 800;
+  margin: 0 auto 12px;
 }
 
 .empty-title {
-  color: #172033;
+  color: #111827;
   font-weight: 700;
-  font-size: 1rem;
-  margin-bottom: 8px;
+  font-size: 1.05rem;
+  margin-bottom: 6px;
 }
 
 .empty-copy {
   line-height: 1.6;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
+  color: #9ca3af;
 }
 
-.message {
-  max-width: min(620px, 76%);
+/* Message bubbles - WeChat style */
+.msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 85%;
 }
 
-.message-consecutive {
-  margin-top: -6px;
-}
-
-.message-user {
+.msg-user {
+  flex-direction: row-reverse;
   align-self: flex-end;
 }
 
-.message-assistant {
+.msg-bot {
   align-self: flex-start;
 }
 
-.message-label {
-  font-size: 0.75rem;
-  color: #8b95a5;
-  margin-bottom: 5px;
-  padding: 0 4px;
+.msg-consecutive {
+  margin-top: 2px;
 }
 
-.message-user .message-label {
-  text-align: right;
-}
-
-.message-bubble {
-  padding: 11px 14px;
-  border-radius: 14px;
-  font-size: 0.96rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-  border: 1px solid transparent;
-}
-
-.message-user .message-bubble {
-  background: #25324a;
-  color: #fff;
-  border-bottom-right-radius: 5px;
-}
-
-.message-assistant .message-bubble {
-  background: #fff;
-  color: #1d2939;
-  border-color: #e3e8ef;
-  border-bottom-left-radius: 5px;
-  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.06);
-}
-
-.typing {
-  color: #8b95a5;
-}
-
-.chat-error {
-  margin: 0 24px 12px;
-  padding: 9px 12px;
-  border-radius: 8px;
-  background: #fff1f0;
-  color: #b42318;
-  border: 1px solid #ffd3cc;
-  font-size: 0.86rem;
+.msg-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
   flex-shrink: 0;
 }
 
+.msg-user .msg-avatar {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.msg-bot .msg-avatar {
+  background: linear-gradient(135deg, #1e1b4b, #312e81);
+  color: #fff;
+}
+
+.msg-bubble-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.msg-bubble-wrap.no-avatar {
+  margin-left: 40px;
+}
+
+.msg-user .msg-bubble-wrap.no-avatar {
+  margin-left: 0;
+  margin-right: 40px;
+}
+
+.msg-name {
+  font-size: 0.72rem;
+  color: #9ca3af;
+  margin-bottom: 2px;
+  margin-left: 2px;
+}
+
+.msg-bubble {
+  padding: 10px 13px;
+  border-radius: 16px;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  position: relative;
+}
+
+.msg-user .msg-bubble {
+  background: #95ec69;
+  color: #000;
+  border-bottom-right-radius: 4px;
+}
+
+.msg-bot .msg-bubble {
+  background: #fff;
+  color: #111827;
+  border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.msg-consecutive .msg-bubble {
+  border-radius: 16px;
+}
+
+.msg-user.msg-consecutive .msg-bubble {
+  border-bottom-right-radius: 4px;
+}
+
+.msg-bot.msg-consecutive .msg-bubble {
+  border-bottom-left-radius: 4px;
+}
+
+/* Typing indicator */
+.typing {
+  padding: 10px 16px;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+
+/* Error */
+.chat-error {
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  font-size: 0.84rem;
+  flex-shrink: 0;
+}
+
+/* ====== Composer ====== */
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 86px;
+  display: flex;
+  align-items: flex-end;
   gap: 10px;
-  padding: 14px 18px 16px;
-  background: rgba(255, 255, 255, 0.96);
-  border-top: 1px solid #dde3ec;
+  padding: 12px 16px 14px;
+  background: #f7f8fa;
+  border-top: 1px solid #e5e7eb;
   flex-shrink: 0;
 }
 
 .composer textarea {
-  width: 100%;
-  min-height: 42px;
-  max-height: 108px;
-  padding: 11px 13px;
-  border: 1px solid #d4dbe7;
-  border-radius: 8px;
+  flex: 1;
+  min-height: 40px;
+  max-height: 100px;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 20px;
   resize: none;
-  color: #172033;
-  font-size: 0.95rem;
+  color: #111827;
+  font-size: 0.92rem;
   line-height: 1.45;
   font-family: inherit;
   box-sizing: border-box;
   background: #fff;
+  transition: border-color 0.15s;
 }
 
 .composer textarea:focus {
   outline: none;
-  border-color: #7c8db5;
-  box-shadow: 0 0 0 3px rgba(124, 141, 181, 0.16);
+  border-color: #95ec69;
+  box-shadow: 0 0 0 2px rgba(149, 236, 105, 0.2);
 }
 
 .btn-send {
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border: none;
-  border-radius: 8px;
-  background: #7c5cff;
+  border-radius: 20px;
+  background: #07c160;
   color: #fff;
-  font-size: 0.95rem;
-  font-weight: 700;
+  display: grid;
+  place-items: center;
   cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, opacity 0.15s;
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #6848ee;
+  background: #06ad56;
 }
 
 .btn-send:disabled {
-  opacity: 0.45;
+  opacity: 0.35;
   cursor: not-allowed;
+  background: #07c160;
 }
 
+/* ====== Mobile Panel Overlay ====== */
+.mobile-panel-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.mobile-panel {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 24px 20px 32px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.mobile-panel-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.mobile-portrait {
+  margin: 0 auto 10px;
+  width: 56px;
+  height: 56px;
+}
+
+.mobile-portrait-initial {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #1e1b4b, #312e81);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 1.3rem;
+  font-weight: 800;
+  margin: 0 auto;
+}
+
+.mobile-panel-header h3 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  color: #111827;
+}
+
+.mobile-personality {
+  font-size: 0.82rem;
+  color: #6b7280;
+  margin: 0;
+}
+
+.mobile-status {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.mobile-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-status-label {
+  width: 52px;
+  font-size: 0.78rem;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.mobile-status-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+}
+
+.mobile-status-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.4s ease;
+}
+
+.mobile-status-val {
+  width: 26px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  text-align: right;
+}
+
+.mobile-tags {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.mobile-tag {
+  font-size: 0.78rem;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ede9fe, #fce7f3);
+  color: #6b21a8;
+  font-weight: 500;
+}
+
+.mobile-hint {
+  font-size: 0.82rem;
+  color: #9ca3af;
+  margin: 0 0 16px;
+}
+
+.mobile-panel-close {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f9fafb;
+  color: #374151;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.mobile-panel-close:hover {
+  background: #f3f4f6;
+}
+
+/* Slide transition */
+.slide-enter-active,
+.slide-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.slide-enter-active .mobile-panel,
+.slide-leave-active .mobile-panel {
+  transition: transform 0.25s ease;
+}
+
+/* ====== Responsive ====== */
 @media (max-width: 860px) {
   .chat-shell {
     grid-template-columns: 1fr;
@@ -695,12 +1065,38 @@ function handleKeydown(e: KeyboardEvent) {
     display: none;
   }
 
-  .conversation-header {
-    min-height: 64px;
+  .mobile-panel-overlay {
+    display: flex;
   }
 
-  .message {
-    max-width: 88%;
+  .btn-back-mobile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .conversation-header {
+    padding: 0 8px;
+    min-height: 50px;
+  }
+
+  .msg {
+    max-width: 90%;
+  }
+
+  .msg-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    font-size: 0.65rem;
+  }
+
+  .msg-bubble-wrap.no-avatar {
+    margin-left: 36px;
+  }
+
+  .msg-user .msg-bubble-wrap.no-avatar {
+    margin-right: 36px;
   }
 }
 </style>

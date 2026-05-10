@@ -17,6 +17,7 @@ const presetPersonalities = [
   '轻松：口语自然，偶尔开玩笑，但不过度玩梗',
   '克制：话少一点，但必须正常回答，不用沉默代替回复',
   '慢热：一开始简短自然，熟悉后更主动一点',
+  '毒舌：嘴毒但心不坏，关键时还是关心',
 ]
 
 const replyStyles = [
@@ -58,8 +59,8 @@ function submit() {
     personality: finalPersonality,
     description: form.description.trim() || (
       form.relationshipMode === 'lover'
-        ? '你们是恋人关系，但只用微信/WhatsApp式短消息聊天，不写旁白和动作。'
-        : '你们是熟悉的日常聊天对象，只用微信/WhatsApp式短消息聊天，不写旁白和动作。'
+        ? '你们是恋人关系，但只用微信式短消息聊天，不写旁白和动作。'
+        : '你们是熟悉的日常聊天对象，只用微信式短消息聊天，不写旁白和动作。'
     ),
   })
 }
@@ -68,7 +69,11 @@ function submit() {
 <template>
   <div class="setup-container">
     <div class="setup-card">
-      <h2>创建你的聊天角色</h2>
+      <div class="setup-header">
+        <div class="setup-icon">✨</div>
+        <h2>创建你的角色</h2>
+        <p class="setup-sub">定义对方的性格和你们的聊天方式</p>
+      </div>
 
       <form @submit.prevent="submit">
         <div class="field">
@@ -76,61 +81,59 @@ function submit() {
           <input v-model="form.name" placeholder="给角色起个名字..." maxlength="20" required />
         </div>
 
-        <div class="field">
-          <label>角色性别</label>
-          <div class="radio-group">
-            <label><input type="radio" v-model="form.gender" value="female" /> 女</label>
-            <label><input type="radio" v-model="form.gender" value="male" /> 男</label>
-            <label><input type="radio" v-model="form.gender" value="other" /> 不限定</label>
+        <div class="field field-row">
+          <div class="field-col">
+            <label>角色性别</label>
+            <div class="btn-group">
+              <button type="button" :class="['btn-opt', form.gender === 'female' ? 'active' : '']" @click="form.gender = 'female'">♀ 女</button>
+              <button type="button" :class="['btn-opt', form.gender === 'male' ? 'active' : '']" @click="form.gender = 'male'">♂ 男</button>
+              <button type="button" :class="['btn-opt', form.gender === 'other' ? 'active' : '']" @click="form.gender = 'other'">其他</button>
+            </div>
+          </div>
+          <div class="field-col">
+            <label>你的性别</label>
+            <div class="btn-group">
+              <button type="button" :class="['btn-opt', form.userGender === 'male' ? 'active' : '']" @click="form.userGender = 'male'">♂ 男</button>
+              <button type="button" :class="['btn-opt', form.userGender === 'female' ? 'active' : '']" @click="form.userGender = 'female'">♀ 女</button>
+            </div>
           </div>
         </div>
 
-        <div class="field field-split">
-          <div>
-            <label>你的性别</label>
-            <div class="radio-group compact">
-              <label><input type="radio" v-model="form.userGender" value="male" /> 男</label>
-              <label><input type="radio" v-model="form.userGender" value="female" /> 女</label>
-            </div>
-          </div>
-          <div>
-            <label>关系</label>
-            <div class="radio-group compact">
-              <label><input type="radio" v-model="form.relationshipMode" value="lover" /> 恋人</label>
-              <label><input type="radio" v-model="form.relationshipMode" value="friend" /> 非恋人</label>
-            </div>
+        <div class="field">
+          <label>关系</label>
+          <div class="btn-group wide">
+            <button type="button" :class="['btn-opt', form.relationshipMode === 'lover' ? 'active' : '']" @click="form.relationshipMode = 'lover'">💕 恋人</button>
+            <button type="button" :class="['btn-opt', form.relationshipMode === 'friend' ? 'active' : '']" @click="form.relationshipMode = 'friend'">👋 朋友</button>
           </div>
         </div>
 
         <div class="field">
           <label>
-            人格
+            人格风格
             <span class="toggle" @click="form.useCustom = !form.useCustom">
               {{ form.useCustom ? '选择预设 ▾' : '自定义 ✎' }}
             </span>
           </label>
-          <select v-if="!form.useCustom" v-model="form.personality">
+          <select v-if="!form.useCustom" v-model="form.personality" class="input-select">
             <option v-for="p in presetPersonalities" :key="p" :value="p">{{ p }}</option>
           </select>
-          <input v-else v-model="form.customPersonality" placeholder="输入自定义性格描述词..."
-            maxlength="100" />
+          <input v-else v-model="form.customPersonality" placeholder="输入自定义性格描述词..." maxlength="100" />
         </div>
 
         <div class="field">
           <label>回复节奏</label>
-          <select v-model="form.replyStyle">
+          <select v-model="form.replyStyle" class="input-select">
             <option v-for="style in replyStyles" :key="style" :value="style">{{ style }}</option>
           </select>
         </div>
 
         <div class="field">
           <label>角色描述 <span class="optional">(可选)</span></label>
-          <textarea v-model="form.description" placeholder="描述角色的背景、说话风格等..."
-            rows="3" maxlength="300"></textarea>
+          <textarea v-model="form.description" placeholder="描述角色的背景、说话风格等..." rows="3" maxlength="300"></textarea>
         </div>
 
         <button type="submit" class="btn-primary" :disabled="submitting">
-          {{ submitting ? '创建中...' : '开始聊天' }}
+          {{ submitting ? '创建中...' : '开始聊天 →' }}
         </button>
       </form>
     </div>
@@ -149,115 +152,169 @@ function submit() {
 
 .setup-card {
   background: #fff;
-  border-radius: 12px;
-  padding: 32px;
+  border-radius: 16px;
+  padding: 32px 28px;
   width: 100%;
-  max-width: 480px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  max-width: 460px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+.setup-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.setup-icon {
+  font-size: 2rem;
+  margin-bottom: 4px;
 }
 
 .setup-card h2 {
-  margin: 0 0 24px;
-  text-align: center;
-  color: #1a1a2e;
+  margin: 0 0 4px;
+  color: #111827;
+  font-size: 1.25rem;
+}
+
+.setup-sub {
+  color: #9ca3af;
+  font-size: 0.85rem;
+  margin: 0;
 }
 
 .field {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .field > label,
-.field-split > div > label {
+.field-row > div > label {
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-weight: 600;
   margin-bottom: 6px;
-  color: #333;
-  font-size: 0.9rem;
+  color: #374151;
+  font-size: 0.85rem;
 }
 
 .optional {
   font-weight: 400;
-  color: #999;
-  font-size: 0.8rem;
+  color: #9ca3af;
+  font-size: 0.78rem;
 }
 
 .toggle {
   font-weight: 400;
-  color: #6c63ff;
+  color: #07c160;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
 
 .toggle:hover {
   text-decoration: underline;
 }
 
-input, select, textarea {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  box-sizing: border-box;
-  font-family: inherit;
-}
-
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: #6c63ff;
-  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.15);
-}
-
-.radio-group {
-  display: flex;
-  gap: 20px;
-}
-
-.field-split {
+.field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 18px;
+  gap: 14px;
 }
 
-.radio-group.compact {
-  gap: 12px;
+.field-col label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #374151;
+  font-size: 0.85rem;
 }
 
-.radio-group label {
+.btn-group {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  font-weight: 400;
+  gap: 6px;
 }
 
-@media (max-width: 560px) {
-  .field-split {
-    grid-template-columns: 1fr;
-  }
+.btn-group.wide {
+  gap: 8px;
+}
+
+.btn-opt {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  text-align: center;
+}
+
+.btn-opt.active {
+  background: #07c160;
+  color: #fff;
+  border-color: #07c160;
+}
+
+.btn-opt:hover:not(.active) {
+  border-color: #9ca3af;
+  background: #f3f4f6;
+}
+
+input, .input-select, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 0.92rem;
+  box-sizing: border-box;
+  font-family: inherit;
+  background: #f9fafb;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input:focus, .input-select:focus, textarea:focus {
+  outline: none;
+  border-color: #95ec69;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(149, 236, 105, 0.2);
+}
+
+.input-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 
 .btn-primary {
   width: 100%;
   padding: 12px;
-  background: #6c63ff;
+  background: #07c160;
   color: #fff;
   border: none;
-  border-radius: 8px;
-  font-size: 1rem;
+  border-radius: 10px;
+  font-size: 0.95rem;
   font-weight: 600;
   cursor: pointer;
   margin-top: 8px;
+  transition: background 0.15s;
 }
 
-.btn-primary:hover {
-  background: #5a52d9;
+.btn-primary:hover:not(:disabled) {
+  background: #06ad56;
 }
 
 .btn-primary:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+  .field-row {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

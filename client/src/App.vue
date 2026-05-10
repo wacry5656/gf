@@ -18,7 +18,6 @@ const creatingCharacter = ref(false)
 const deletingCharacterId = ref<number | null>(null)
 let activeCharacterRequestId = 0
 
-// 初始化：检查本地存储的登录信息
 onMounted(() => {
   const saved = getCurrentUser()
   if (saved) {
@@ -151,12 +150,11 @@ async function selectCharacter(char: Character, options: { persistSelection?: bo
 async function onDeleteCharacter(char: Character) {
   if (!char.id || !user.value) return
   if (deletingCharacterId.value) return
-  if (!window.confirm(`确定删除「${char.name}」和她的聊天记录吗？`)) return
+  if (!window.confirm(`确定删除「${char.name}」的聊天记录和所有数据吗？`)) return
   deletingCharacterId.value = char.id
   try {
     appError.value = ''
     await deleteCharacter(char.id, user.value.userId)
-    // 删除成功后，重新请求角色列表而非只做本地过滤
     if (activeCharacter.value?.id === char.id) {
       activeCharacter.value = null
       chatMessages.value = []
@@ -188,8 +186,12 @@ function displayPersonality(raw: string): string {
     .split(/[\n\r]|主动[:：]|回复节奏[:：]|边界[:：]|禁止旁白|禁止动作|禁止心理|系统规则|聊天规则/)[0]
     ?.trim() || '自然聊天'
   return publicText
-    .replace(/^(自然|温和|直率|轻松|克制|慢热)[:：]\s*/, '$1：')
+    .replace(/^(自然|温和|直率|轻松|克制|慢热|毒舌)[:：]\s*/, '$1：')
     .replace(/[。.]?$/, '')
+}
+
+function getRelationLabel(mode: string | undefined): string {
+  return mode === 'friend' ? '朋友' : '恋人'
 }
 </script>
 
@@ -198,7 +200,8 @@ function displayPersonality(raw: string): string {
     <!-- 未登录 -->
     <template v-if="!user">
       <header class="app-header">
-        <h1>虚拟聊天角色</h1>
+        <div class="app-logo">💬</div>
+        <h1>虚拟聊天</h1>
       </header>
       <main class="app-main">
         <div v-if="appError" class="app-error">{{ appError }}</div>
@@ -208,12 +211,20 @@ function displayPersonality(raw: string): string {
 
     <!-- 已登录 -->
     <template v-else>
-      <header class="app-header">
-        <h1>虚拟聊天角色</h1>
+      <header class="app-header app-header-logged">
+        <div class="header-left">
+          <button v-if="activeCharacter" class="btn-back" @click="goBack">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            列表
+          </button>
+          <div v-else class="app-brand">
+            <span class="app-logo-sm">💬</span>
+            <span class="app-title">我的角色</span>
+          </div>
+        </div>
         <div class="header-right">
-          <span class="user-info">{{ user.username }}</span>
-          <button v-if="activeCharacter" class="btn-header" @click="goBack">返回列表</button>
-          <button class="btn-header btn-logout" @click="onLogout">退出</button>
+          <span class="user-badge">{{ user.username }}</span>
+          <button class="btn-logout" @click="onLogout">退出</button>
         </div>
       </header>
 
@@ -233,19 +244,26 @@ function displayPersonality(raw: string): string {
           :character="activeCharacter"
           :user-id="user.userId"
           v-model:messages="chatMessages"
+          @back="goBack"
         />
 
         <!-- 角色列表 -->
         <div v-else class="char-list-container">
           <div class="char-list-header">
             <h2>我的角色</h2>
-            <button class="btn-primary-sm" @click="showNewCharacter = true">新建角色</button>
+            <button class="btn-create" @click="showNewCharacter = true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              新建
+            </button>
           </div>
 
           <div v-if="loading" class="char-loading">加载中...</div>
 
           <div v-else-if="characters.length === 0" class="char-empty">
-            <p>还没有角色，先创建一个默认认同为你对象的虚拟人物。</p>
+            <div class="empty-icon">✨</div>
+            <p>还没有角色</p>
+            <p class="empty-hint">创建一个角色，开始你们的聊天</p>
+            <button class="btn-create-center" @click="showNewCharacter = true">创建第一个角色</button>
           </div>
 
           <div v-else class="char-grid">
@@ -255,13 +273,16 @@ function displayPersonality(raw: string): string {
               class="char-card"
               @click="selectCharacter(char)"
             >
-              <div class="char-avatar">{{ char.name.slice(0, 1) }}</div>
-              <div class="char-info">
-                <div class="char-name">{{ char.name }}</div>
-                <div class="char-desc">{{ displayPersonality(char.personality) }}</div>
+              <div class="card-avatar">{{ char.name.slice(0, 1) }}</div>
+              <div class="card-info">
+                <div class="card-name">{{ char.name }}</div>
+                <div class="card-tags">
+                  <span class="card-tag">{{ getRelationLabel(char.relationshipMode) }}</span>
+                  <span class="card-tag card-tag-personality">{{ displayPersonality(char.personality) }}</span>
+                </div>
               </div>
               <button
-                class="btn-delete"
+                class="btn-delete-card"
                 :disabled="deletingCharacterId === char.id"
                 @click.stop="onDeleteCharacter(char)"
                 title="删除角色"
@@ -281,57 +302,102 @@ function displayPersonality(raw: string): string {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #eef1f4;
+  background: #f0f2f5;
 }
 
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   padding: 14px 20px;
-  background: #172033;
+  background: #1e1b4b;
   color: #fff;
   flex-shrink: 0;
+  gap: 10px;
+}
+
+.app-header-logged {
+  justify-content: space-between;
+}
+
+.app-logo {
+  font-size: 1.4rem;
+}
+
+.app-logo-sm {
+  font-size: 1.1rem;
+  margin-right: 6px;
+}
+
+.app-title {
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .app-header h1 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1.1rem;
   letter-spacing: 0;
+  font-weight: 700;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
-.user-info {
-  font-size: 0.85rem;
-  opacity: 0.8;
-}
-
-.btn-header {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.4);
+.btn-back {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
   color: #fff;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.btn-back:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.user-badge {
+  font-size: 0.82rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.btn-logout {
+  background: rgba(255, 100, 100, 0.15);
+  border: 1px solid rgba(255, 100, 100, 0.3);
+  color: #fbb;
   padding: 5px 12px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.8rem;
-}
-
-.btn-header:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.btn-logout {
-  border-color: rgba(255, 100, 100, 0.5);
-  color: #fbb;
+  font-family: inherit;
+  transition: background 0.15s;
 }
 
 .btn-logout:hover {
-  background: rgba(255, 100, 100, 0.15);
+  background: rgba(255, 100, 100, 0.25);
 }
 
 .app-main {
@@ -344,57 +410,97 @@ function displayPersonality(raw: string): string {
 .app-error {
   flex-shrink: 0;
   padding: 10px 18px;
-  color: #b42318;
-  background: #fff1f0;
-  border-bottom: 1px solid #ffd3cc;
-  font-size: 0.88rem;
+  color: #b91c1c;
+  background: #fef2f2;
+  border-bottom: 1px solid #fecaca;
+  font-size: 0.86rem;
 }
 
-/* 角色列表 */
+/* Character List */
 .char-list-container {
   flex: 1;
   padding: 24px;
   overflow-y: auto;
-  background: #eef1f4;
+  background: #f0f2f5;
 }
 
 .char-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .char-list-header h2 {
   margin: 0;
-  font-size: 1.1rem;
-  color: #333;
+  font-size: 1.2rem;
+  color: #111827;
+  font-weight: 700;
 }
 
-.btn-primary-sm {
-  background: #25324a;
+.btn-create {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #07c160;
   color: #fff;
   border: none;
-  padding: 8px 16px;
-  border-radius: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
 }
 
-.btn-primary-sm:hover {
-  background: #344563;
+.btn-create:hover {
+  background: #06ad56;
 }
 
 .char-loading, .char-empty {
   text-align: center;
-  color: #999;
-  margin-top: 40px;
+  color: #9ca3af;
+  margin-top: 60px;
+}
+
+.empty-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+
+.char-empty p {
+  margin: 4px 0;
+  font-size: 0.95rem;
+  color: #6b7280;
+}
+
+.empty-hint {
+  font-size: 0.85rem !important;
+  color: #9ca3af !important;
+}
+
+.btn-create-center {
+  margin-top: 20px;
+  padding: 10px 24px;
+  background: #07c160;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.btn-create-center:hover {
+  background: #06ad56;
 }
 
 .char-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
 }
 
@@ -403,70 +509,92 @@ function displayPersonality(raw: string): string {
   align-items: center;
   gap: 14px;
   background: #fff;
-  border: 1px solid #e4e7ec;
-  border-radius: 8px;
-  padding: 14px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 16px;
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  transition: all 0.15s;
 }
 
 .char-card:hover {
-  border-color: #b9c3d1;
-  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.08);
+  border-color: #95ec69;
+  box-shadow: 0 4px 16px rgba(7, 193, 96, 0.1);
   transform: translateY(-1px);
 }
 
-.char-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+.card-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
-  background: #25324a;
+  background: linear-gradient(135deg, #1e1b4b, #312e81);
   color: #fff;
   font-weight: 700;
-  font-size: 1rem;
+  font-size: 1.05rem;
   flex-shrink: 0;
 }
 
-.char-info {
+.card-info {
   flex: 1;
   min-width: 0;
 }
 
-.char-name {
+.card-name {
   font-weight: 600;
-  font-size: 1rem;
-  color: #333;
+  font-size: 0.95rem;
+  color: #111827;
 }
 
-.char-desc {
-  font-size: 0.8rem;
-  color: #888;
-  margin-top: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.card-tags {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
 }
 
-.btn-delete {
+.card-tag {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.card-tag-personality {
+  background: #ede9fe;
+  color: #6b21a8;
+}
+
+.btn-delete-card {
   background: none;
   border: none;
-  color: #ccc;
-  font-size: 1rem;
+  color: #d1d5db;
+  font-size: 0.9rem;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  transition: all 0.15s;
 }
 
-.btn-delete:hover {
-  color: #e53935;
-  background: rgba(229, 57, 53, 0.08);
+.btn-delete-card:hover {
+  color: #ef4444;
+  background: #fef2f2;
 }
 
-.btn-delete:disabled {
-  color: #999;
+.btn-delete-card:disabled {
+  color: #9ca3af;
   cursor: wait;
   background: transparent;
+}
+
+@media (max-width: 640px) {
+  .char-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .char-list-container {
+    padding: 16px;
+  }
 }
 </style>

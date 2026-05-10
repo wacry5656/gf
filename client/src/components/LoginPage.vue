@@ -24,6 +24,11 @@ async function submit() {
     return
   }
 
+  if (p.length < 4) {
+    error.value = '密码至少4位'
+    return
+  }
+
   if (isRegister.value) {
     if (p !== confirmPassword.value) {
       error.value = '两次密码不一致'
@@ -56,17 +61,19 @@ function toggleMode() {
 <template>
   <div class="auth-container">
     <div class="auth-card">
-      <h2>{{ isRegister ? '注册账号' : '登录' }}</h2>
+      <div class="auth-brand">💬</div>
+      <h2>{{ isRegister ? '创建账号' : '欢迎回来' }}</h2>
+      <p class="auth-sub">{{ isRegister ? '设置用户名和密码开始使用' : '登录你的账号继续聊天' }}</p>
 
       <form @submit.prevent="submit">
         <div class="field">
           <label>用户名</label>
-          <input v-model="username" placeholder="请输入用户名" maxlength="20" autofocus />
+          <input v-model="username" placeholder="输入用户名" maxlength="20" autofocus />
         </div>
 
         <div class="field">
           <label>密码</label>
-          <input v-model="password" type="password" placeholder="请输入密码" />
+          <input v-model="password" type="password" placeholder="输入密码" />
         </div>
 
         <div v-if="isRegister" class="field">
@@ -77,7 +84,7 @@ function toggleMode() {
         <div v-if="error" class="error-msg">{{ error }}</div>
 
         <button type="submit" class="btn-primary" :disabled="loading">
-          {{ loading ? '处理中...' : (isRegister ? '注册' : '登录') }}
+          {{ loading ? '处理中...' : (isRegister ? '创建账号' : '登录') }}
         </button>
       </form>
 
@@ -105,84 +112,107 @@ function toggleMode() {
 
 .auth-card {
   background: #fff;
-  border-radius: 12px;
-  padding: 32px;
+  border-radius: 16px;
+  padding: 36px 28px;
   width: 100%;
-  max-width: 380px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  max-width: 360px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+.auth-brand {
+  text-align: center;
+  font-size: 2.2rem;
+  margin-bottom: 8px;
 }
 
 .auth-card h2 {
-  margin: 0 0 24px;
+  margin: 0 0 4px;
   text-align: center;
-  color: #1a1a2e;
+  color: #111827;
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.auth-sub {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.85rem;
+  margin: 0 0 24px;
 }
 
 .field {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .field label {
   display: block;
   font-weight: 600;
-  margin-bottom: 6px;
-  color: #333;
-  font-size: 0.9rem;
+  margin-bottom: 5px;
+  color: #374151;
+  font-size: 0.82rem;
 }
 
 .field input {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 0.95rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 0.92rem;
   box-sizing: border-box;
+  background: #f9fafb;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .field input:focus {
   outline: none;
-  border-color: #6c63ff;
-  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.15);
+  border-color: #95ec69;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(149, 236, 105, 0.2);
 }
 
 .error-msg {
-  color: #d32f2f;
-  font-size: 0.85rem;
-  margin-bottom: 12px;
+  color: #b91c1c;
+  font-size: 0.82rem;
+  margin-bottom: 10px;
   text-align: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #fef2f2;
 }
 
 .btn-primary {
   width: 100%;
   padding: 12px;
-  background: #6c63ff;
+  background: #07c160;
   color: #fff;
   border: none;
-  border-radius: 8px;
-  font-size: 1rem;
+  border-radius: 10px;
+  font-size: 0.95rem;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.15s;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #5a52d9;
+  background: #06ad56;
 }
 
 .btn-primary:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .toggle-link {
   text-align: center;
   margin-top: 16px;
-  font-size: 0.85rem;
-  color: #666;
+  font-size: 0.82rem;
+  color: #9ca3af;
 }
 
 .toggle-link a {
-  color: #6c63ff;
+  color: #07c160;
   text-decoration: none;
+  font-weight: 500;
 }
 
 .toggle-link a:hover {
