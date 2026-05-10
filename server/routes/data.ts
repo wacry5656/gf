@@ -238,7 +238,7 @@ dataRouter.delete('/messages/:characterId', (req: Request, res: Response) => {
 
 // ====== 情绪状态 ======
 
-const MOOD_LABEL: Record<Mood, string> = {
+const MOOD_LABEL: Record<string, string> = {
   warm: '温柔',
   happy: '开心',
   playful: '俏皮',
@@ -247,6 +247,9 @@ const MOOD_LABEL: Record<Mood, string> = {
   upset: '有点委屈',
   jealous: '吃醋',
   distant: '有点冷淡',
+  sulking: '生闷气',
+  disappointed: '小失望',
+  anticipating: '期待',
 };
 
 dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
@@ -288,7 +291,7 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
 
 // ====== 关系状态 ======
 
-const PHASE_LABEL: Record<RelationshipPhase, string> = {
+const PHASE_LABEL: Record<string, string> = {
   close: '熟悉',
   attached: '亲近',
   deep_attached: '深度依恋',

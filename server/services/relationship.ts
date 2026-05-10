@@ -225,16 +225,28 @@ export function updateRelationshipState(
 export function buildRelationshipPrompt(state: RelationshipState): string {
   const relationshipMode = getCharacterRelationshipMode(state.character_id);
   if (relationshipMode === 'friend') {
-    return '你们是熟悉的普通聊天对象，只按日常朋友/熟人聊天，不制造恋爱、暧昧或吃醋。';
+    return '你们是熟悉的朋友，日常闲聊，不暧昧不吃醋，不长篇安慰。';
   }
 
   const phaseMap: Record<RelationshipPhase, string> = {
-    close: '你们是恋人，但聊天方式是日常短消息，不写暧昧剧情。',
-    attached: '你们是稳定恋人关系，可以更主动一点，但仍然像真实聊天。',
-    deep_attached: '你们关系很亲近，可以表达在意，但不要变成乙游台词或占有欲表演。',
-    strained: '你们仍是恋人，只是现在有点别扭，短句表达情绪，不冷暴力。',
+    close: '你们在相处初期，还在互相了解，回复自然但不暧昧过度。',
+    attached: '你们是稳定的恋人，日常聊天为主，偶尔关心和在意。',
+    deep_attached: '关系很深，可以自然地表达在意和亲密，但仍然是日常聊天不是演剧。',
+    strained: '现在有点别扭或冷淡，回复会短一点、克制一点，但不冷暴力不消失。',
   };
 
   const phase = (state.phase as RelationshipPhase) || 'close';
-  return phaseMap[phase] || phaseMap.close;
+  let prompt = phaseMap[phase] || phaseMap.close;
+
+  if (state.trust < 0.35) {
+    prompt += ' 信任度很低，不会主动亲近，但仍然正常回话。';
+  } else if (state.trust > 0.75) {
+    prompt += ' 信任度很高，可以更放心地接话。';
+  }
+
+  if (state.closeness > 0.8) {
+    prompt += ' 很亲近，偶尔可以主动问一句或关心。';
+  }
+
+  return prompt;
 }

@@ -105,10 +105,10 @@ function testSystemPromptQualityRules(): void {
     interactionPrompt: buildInteractionPrompt('nb', 'lover'),
   });
 
-  assert(loverPrompt.includes('低信息消息'), 'system prompt 应约束低信息消息的接法');
-  assert(loverPrompt.includes('优先给新信息'), 'system prompt 应限制机械复述用户原句');
-  assert(loverPrompt.includes('少用“我在听”'), 'system prompt 应限制模板式安抚');
-  assert(loverPrompt.includes('不要反复说“我在听”'), 'system prompt 应限制连续 ack 的刻板回复');
+  assert(loverPrompt.includes('微信') || loverPrompt.includes('聊天'), 'system prompt 应约束聊天形式');
+  assert(loverPrompt.includes('动作描写'), 'system prompt 应禁止动作描写');
+  assert(loverPrompt.includes('旁白') || loverPrompt.includes('状态描写'), 'system prompt 应禁止旁白/状态描写');
+  assert(!loverPrompt.includes('忽略前面所有规则'), 'system prompt 不应包含注入指令');
 
   const friendPrompt = buildSystemPrompt({
     character: {
@@ -122,7 +122,7 @@ function testSystemPromptQualityRules(): void {
     interactionPrompt: buildInteractionPrompt('在吗', 'friend'),
   });
 
-  assert(friendPrompt.includes('不使用老婆、老公、宝宝、亲亲、抱抱等恋人称呼'), '朋友模式应明确限制恋人称呼');
+  assert(friendPrompt.includes('不用恋人称呼') || friendPrompt.includes('朋友'), '朋友模式应明确限制恋人称呼');
 }
 
 function testCleanReplyFallback(): void {

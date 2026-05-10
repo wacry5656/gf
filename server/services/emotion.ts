@@ -16,7 +16,7 @@ import { readRelationshipState } from './relationship';
 
 // ========== 类型定义 ==========
 
-export type Mood = 'warm' | 'happy' | 'playful' | 'shy' | 'caring' | 'upset' | 'jealous' | 'distant';
+export type Mood = 'warm' | 'happy' | 'playful' | 'shy' | 'caring' | 'upset' | 'jealous' | 'distant' | 'sulking' | 'disappointed' | 'anticipating';
 
 export interface EmotionState {
   user_id: number;
@@ -35,11 +35,11 @@ export interface EmotionState {
 
 const DEFAULT_EMOTION = {
   mood: 'warm' as Mood,
-  affection: 0.68,
-  trustScore: 0.58,
+  affection: 0.65,
+  trustScore: 0.55,
   jealousyScore: 0,
   angerScore: 0,
-  stabilityScore: 0.78,
+  stabilityScore: 0.75,
 };
 
 // ========== Helpers ==========
@@ -77,9 +77,18 @@ function positiveChangeFactor(currentValue: number, lastTrigger: string | null, 
 }
 
 function pickMood(candidates: Mood[], current: Mood, stability: number): Mood {
-  // stability 越高越不容易跳变；随机因子让表现不那么死板
-  if (Math.random() < stability * 0.6) return current;
+  if (Math.random() < stability * 0.55) return current;
   return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function naturalMoodDecay(mood: Mood, angerScore: number, jealousyScore: number): Mood | null {
+  const roll = Math.random();
+  if (mood === 'upset' && angerScore < 0.25 && roll < 0.35) return 'warm';
+  if (mood === 'jealous' && jealousyScore < 0.2 && roll < 0.3) return 'warm';
+  if (mood === 'sulking' && roll < 0.25) return 'warm';
+  if (mood === 'distant' && roll < 0.15) return 'warm';
+  if (mood === 'disappointed' && roll < 0.2) return 'warm';
+  return null;
 }
 
 // ========== 公开 API ==========
@@ -164,7 +173,6 @@ export function updateEmotionState(
 ): void {
   const state = getEmotionState(userId, characterId);
 
-  // 读取关系状态用于融合（只读，不创建）
   const relationshipMode = getCharacterRelationshipMode(characterId);
   const rel = readRelationshipState(userId, characterId);
   const closeness = rel?.closeness ?? 0.5;
@@ -175,30 +183,58 @@ export function updateEmotionState(
   let trigger: string | null = state.last_trigger;
   let moodChanged = false;
 
-  // 防止单字（如"嗯""哦"）直接触发负面情绪
   const trimmed = userInput.trim();
   const isTooShort = trimmed.length <= 1;
   const audit = auditInteraction(userInput, relationshipMode);
   const partnerConflict = audit.partnerConflict;
 
-  // 规则1：亲密表达/索取确认只影响语气，不直接涨好感，避免关键词刷分。
+  // 规则0：撒娇 → 亲密度微涨，心情变好或害羞
+  if (relationshipMode === 'lover' && !partnerConflict && audit.coquettish) {
+    affection += delta(0.02, userInput);
+    jealousy_score -= delta(0.03, userInput);
+    mood = pickMood(['happy', 'shy', 'playful'], mood, stability_score);
+    trigger = '撒娇';
+    moodChanged = true;
+  }
+
+  // 规则0b：分享日常 → 心情微暖，信任微涨
+  if (!isTooShort && audit.sharing && !audit.cold && !audit.attack) {
+    trust_score += delta(0.012, userInput);
+    if (!moodChanged) {
+      mood = pickMood(['warm', 'happy'], mood, stability_score);
+      trigger = '分享日常';
+      moodChanged = true;
+    }
+  }
+
+  // 规则0c：无聊/抱怨生活 → 当下心情微低，但不影响感情
+  if (!isTooShort && audit.boredComplaint && !audit.cold && !audit.attack) {
+    if (!moodChanged) {
+      mood = pickMood(['caring', 'warm'], mood, stability_score);
+      trigger = '无聊或吐槽';
+      moodChanged = true;
+    }
+  }
+
+  // 规则1：亲密表达/索取确认只影响语气，不直接涨好感
   if (relationshipMode === 'lover' && !partnerConflict && (audit.intimateExpression || audit.reassuranceSeeking)) {
     anger_score -= delta(0.035, userInput);
-    mood = pickMood(['warm', 'happy', 'shy'], mood, stability_score);
-    trigger = audit.primaryEvent || '亲密表达';
-    moodChanged = true;
+    jealousy_score -= delta(0.02, userInput);
+    if (!moodChanged) {
+      mood = pickMood(['warm', 'happy', 'shy'], mood, stability_score);
+      trigger = audit.primaryEvent || '亲密表达';
+      moodChanged = true;
+    }
   }
 
   // 规则2：冷淡/攻击（单字不触发）
   if (!isTooShort && (audit.cold || audit.attack)) {
-    // closeness 高时减弱负面影响
     const dampening = closeness >= 0.7 ? 0.5 : 1.0;
     affection -= delta(audit.attack ? 0.09 : 0.06, userInput) * dampening;
     trust_score -= delta(audit.attack ? 0.09 : 0.06, userInput) * dampening;
     anger_score += delta(audit.attack ? 0.13 : 0.08, userInput) * dampening;
-    // trust 高时不容易直接变 distant
     if (relTrust >= 0.6) {
-      mood = pickMood(['upset'], mood, stability_score);
+      mood = pickMood(['upset', 'sulking'], mood, stability_score);
     } else {
       mood = pickMood(['upset', 'distant'], mood, stability_score);
     }
@@ -212,9 +248,8 @@ export function updateEmotionState(
     trust_score -= delta(partnerConflict ? 0.12 : 0.02, userInput);
     jealousy_score += delta(partnerConflict ? 0.18 : 0.12, userInput);
     anger_score += delta(partnerConflict ? 0.08 : 0.03, userInput);
-    // closeness 高时偏"轻微在意"，不变攻击性吃醋
     if (closeness >= 0.6) {
-      mood = pickMood(['jealous', 'shy'], mood, stability_score);
+      mood = pickMood(['jealous', 'sulking'], mood, stability_score);
     } else {
       mood = pickMood(['jealous', 'upset'], mood, stability_score);
     }
@@ -222,34 +257,61 @@ export function updateEmotionState(
     moodChanged = true;
   }
 
-  // 规则4：通过审核的真实关心/修复/承诺才小幅增长。
+  // 规则4：通过审核的真实关心/修复/承诺才小幅增长
   if (audit.canIncreaseBond) {
     const scoreBoost = Math.min(1.5, audit.positiveScore) / 1.5;
     const changeFactor = positiveChangeFactor(affection, state.last_trigger, state.updated_at, audit.primaryEvent);
     affection += delta(0.018 + 0.02 * scoreBoost, userInput) * changeFactor;
     trust_score += delta(0.028 + 0.025 * scoreBoost, userInput) * changeFactor;
     anger_score -= delta(0.06, userInput);
-    mood = pickMood(['caring', 'warm', 'shy'], mood, stability_score);
-    trigger = audit.primaryEvent || '正向互动';
-    moodChanged = true;
+    jealousy_score -= delta(0.03, userInput);
+    if (!moodChanged) {
+      mood = pickMood(['caring', 'warm', 'anticipating'], mood, stability_score);
+      trigger = audit.primaryEvent || '正向互动';
+      moodChanged = true;
+    }
+  }
+
+  // 规则5：道歉/修复互动 → 降低生气和嫉妒
+  if (!isTooShort && audit.repair && !audit.cold && !audit.attack) {
+    anger_score -= delta(0.08, userInput);
+    jealousy_score -= delta(0.06, userInput);
+    trust_score += delta(0.02, userInput);
+    if (!moodChanged) {
+      mood = pickMood(['warm', 'shy'], mood, stability_score);
+      trigger = '道歉修复';
+      moodChanged = true;
+    }
+  }
+
+  // 规则6：试探/暗示
+  if (!isTooShort && audit.probing && !audit.cold && !audit.attack && !audit.thirdParty) {
+    if (!moodChanged) {
+      mood = pickMood(['shy', 'playful', 'anticipating'], mood, stability_score);
+      trigger = '试探暗示';
+      moodChanged = true;
+    }
   }
 
   // 自然衰减：jealousy 缓慢回落
   if (relationshipMode === 'friend') {
     jealousy_score -= 0.04;
   } else if (!audit.thirdParty) {
-    jealousy_score -= 0.01;
+    jealousy_score -= 0.015;
   }
 
   if (!audit.cold && !audit.attack) {
-    anger_score -= 0.015;
+    anger_score -= 0.018;
   }
 
-  // 情绪稳定机制：没有明显触发时不改 mood
+  // 情绪稳定机制：没有明显触发时尝试回到warm
   if (!moodChanged) {
-    // trust 高时更容易回到 warm
-    if (relTrust >= 0.65 && (mood === 'upset' || mood === 'distant')) {
-      if (Math.random() < 0.3) {
+    const decayedMood = naturalMoodDecay(mood, anger_score, jealousy_score);
+    if (decayedMood) {
+      mood = decayedMood;
+      trigger = '自然回温';
+    } else if (relTrust >= 0.65 && (mood === 'upset' || mood === 'distant' || mood === 'sulking')) {
+      if (Math.random() < 0.25) {
         mood = 'warm';
         trigger = '自然回温';
       }
@@ -257,11 +319,11 @@ export function updateEmotionState(
   }
 
   // comfort_level 低时更容易偏 distant
-  if (comfortLevel < 0.35 && !moodChanged && Math.random() < 0.2) {
+  if (comfortLevel < 0.35 && !moodChanged && Math.random() < 0.15) {
     mood = 'distant';
   }
 
-  // clamp 所有分值
+  // clamp
   affection = clamp(affection);
   trust_score = clamp(trust_score);
   jealousy_score = clamp(jealousy_score);
@@ -282,20 +344,23 @@ export function updateEmotionState(
 export function buildEmotionPrompt(state: EmotionState): string {
   const relationshipMode = getCharacterRelationshipMode(state.character_id);
   if (relationshipMode === 'friend' && state.mood === 'jealous') {
-    return '当前只是普通聊天关系，不表现吃醋或占有欲，正常接话。';
+    return '当前只是普通朋友关系，不表现吃醋或占有欲，正常接话。';
   }
 
   const moodMap: Record<Mood, string> = {
-    warm: '当前情绪稳定，语气自然，不刻意甜。',
-    happy: '当前心情不错，回复可以更轻快主动一点。',
-    playful: '当前有点想轻松调侃，语气可以稍微俏皮一点。',
-    shy: '当前有一点害羞，语气会稍微收一点，但依然正常回话。',
-    caring: '当前更愿意照顾用户情绪，语气柔和但不长篇安慰。',
+    warm: '当前情绪稳定，自然聊天，语气不刻意甜也不冷淡。',
+    happy: '当前心情不错，回复可以轻快一些，但一两句就够，不要刷屏。',
+    playful: '当前有点想轻松调侃，可以俏皮一两句，但不连续玩梗。',
+    shy: '当前稍有点害羞，语气收一点，但必须正常回话不躲。',
+    caring: '当前更想照顾对方情绪，先接住对方的话，但不长篇安慰。',
     upset: state.anger_score >= 0.45
-      ? '当前明显不高兴，会短句直接表达不满，不写动作或冷暴力。'
-      : '当前有点不开心，语气克制，但仍然正常回话。',
-    jealous: '当前有一点在意，但只用一句很轻的日常表达，不阴阳怪气。',
-    distant: '当前稍微收着一点，回复更短，但不用动作或沉默代替回答。',
+      ? '当前明显不高兴，会直接说不满，短句、明确，不写动作也不冷暴力。'
+      : '当前有点不高兴，回复会更短更克制，但仍正常回话。',
+    jealous: '当前有一点在意/吃醋，只轻描淡写一句表达，不阴阳怪气不控制对方。',
+    sulking: '当前在生闷气，回复比平时短，语气带一点别扭，但不会不理人。',
+    distant: '当前有点收着，回复更短，但不用沉默或动作代替回答。',
+    disappointed: '当前有一点小失望，语气稍低落，但仍然平静地回话。',
+    anticipating: '当前有点期待，语气比平时稍主动一点，自然地接话。',
   };
 
   const mood = state.mood || 'warm';
