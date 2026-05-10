@@ -48,18 +48,16 @@ export function buildContinuityPrompt(characterId: number): string {
   const lines: string[] = [];
 
   if (insights.activePlans.length > 0) {
-    lines.push('未完成计划：');
-    lines.push(...insights.activePlans.map((item) => `- ${item}`));
+    lines.push(`对方之前提过：${insights.activePlans.join('；')}。如果合适可以接着聊，但不要突兀地问。`);
   }
 
   if (insights.recentStates.length > 0) {
-    lines.push('近期情绪/事件：');
-    lines.push(...insights.recentStates.map((item) => `- ${item}`));
+    lines.push(`对方最近的状态：${insights.recentStates.join('；')}。自然回应就好。`);
   }
 
   if (lines.length === 0) return '';
 
-  return `===== 连续性提示（可顺手承接，不要强行提起） =====\n${trimToTokenBudget(lines.join('\n'), 260)}\n`;
+  return trimToTokenBudget(lines.join(' '), 280);
 }
 
 function selectMemoryTexts(characterId: number, whereClause: string, limit: number): string[] {

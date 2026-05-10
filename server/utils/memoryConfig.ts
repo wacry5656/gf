@@ -18,26 +18,26 @@ function bool(key: string, fallback: boolean): boolean {
 
 export const memoryConfig = {
   // ---- 检索参数 ----
-  get topK() { return num('MEMORY_TOP_K', 8); },
-  get coreMemoryLimit() { return num('MEMORY_CORE_LIMIT', 6); },
-  get recentMessageLimit() { return num('RECENT_MESSAGE_LIMIT', 28); },
+get topK() { return num('MEMORY_TOP_K', 6); },
+  get coreMemoryLimit() { return num('MEMORY_CORE_LIMIT', 4); },
+  get recentMessageLimit() { return num('RECENT_MESSAGE_LIMIT', 24); },
   get maxPromptTokens() { return num('CONTEXT_MAX_TOKENS', 6800); },
   get systemTokenBudget() { return num('CONTEXT_SYSTEM_TOKENS', 2600); },
-  get recentTokenBudget() { return num('CONTEXT_RECENT_TOKENS', 2200); },
+  get recentTokenBudget() { return num('CONTEXT_RECENT_TOKENS', 2400); },
   get singleMessageTokenBudget() { return num('CONTEXT_SINGLE_MESSAGE_TOKENS', 260); },
-  get summaryTokenBudget() { return num('CONTEXT_SUMMARY_TOKENS', 520); },
-  get memoryTokenBudget() { return num('CONTEXT_MEMORY_TOKENS', 1400); },
+  get summaryTokenBudget() { return num('CONTEXT_SUMMARY_TOKENS', 400); },
+  get memoryTokenBudget() { return num('CONTEXT_MEMORY_TOKENS', 1200); },
   get maxCandidates() { return num('MEMORY_RE_RANK_CANDIDATES', num('MEMORY_MAX_CANDIDATES', 40)); },
   get recallThreshold() { return num('MEMORY_RECALL_THRESHOLD', num('MEMORY_SIMILARITY_THRESHOLD', 0.25)); },
   get dedupThreshold() { return num('MEMORY_DEDUP_THRESHOLD', 0.92); },
   get maxContextChars() { return num('MEMORY_MAX_CONTEXT_CHARS', 2800); },
 
   // ---- 重排序权重 ----
-  get semanticWeight() { return num('MEMORY_SEMANTIC_WEIGHT', 0.70); },
-  get importanceWeight() { return num('MEMORY_IMPORTANCE_WEIGHT', 0.12); },
-  get recencyWeight() { return num('MEMORY_RECENCY_WEIGHT', 0.10); },
-  get usageWeight() { return num('MEMORY_USAGE_WEIGHT', 0.08); },
-  get keywordWeight() { return num('MEMORY_KEYWORD_WEIGHT', 0.16); },
+  get semanticWeight() { return num('MEMORY_SEMANTIC_WEIGHT', 0.60); },
+  get importanceWeight() { return num('MEMORY_IMPORTANCE_WEIGHT', 0.14); },
+  get recencyWeight() { return num('MEMORY_RECENCY_WEIGHT', 0.12); },
+  get usageWeight() { return num('MEMORY_USAGE_WEIGHT', 0.06); },
+  get keywordWeight() { return num('MEMORY_KEYWORD_WEIGHT', 0.18); },
   get keywordRecallThreshold() { return num('MEMORY_KEYWORD_RECALL_THRESHOLD', 0.16); },
 
   // ---- Summary ----

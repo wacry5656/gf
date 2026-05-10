@@ -28,7 +28,7 @@ interface ExtractionRule {
 const EXTRACTION_RULES: ExtractionRule[] = [
   // ---- 身份 / 个人信息 ----
   {
-    pattern: /我(叫|名字是|名字叫)(.{1,8})/,
+    pattern: /我(叫|名字是|名字叫|是)(.{1,8})/,
     category: 'identity',
     normalize: (m) => `用户名字：${m[2].replace(/[，。！？,!?]/g, '').trim()}`,
   },
@@ -69,12 +69,12 @@ const EXTRACTION_RULES: ExtractionRule[] = [
 
   // ---- 偏好 ----
   {
-    pattern: /我(喜欢|最喜欢|爱|最爱|特别喜欢|超喜欢)(.{1,25})/,
+    pattern: /我(喜欢|最喜欢|爱|最爱|特别喜欢|超喜欢|偏好|偏好|一般喜欢)(.{1,25})/,
     category: 'preference',
     normalize: (m) => `用户喜欢：${m[2].replace(/[。，！？,!?]/g, '').trim()}`,
   },
   {
-    pattern: /我(讨厌|不喜欢|最怕|受不了|不爱|害怕)(.{1,25})/,
+    pattern: /我(讨厌|不喜欢|最怕|受不了|不爱|害怕|反感|不想|不太喜欢)(.{1,25})/,
     category: 'preference',
     normalize: (m) => `用户不喜欢：${m[2].replace(/[。，！？,!?]/g, '').trim()}`,
   },
@@ -102,14 +102,14 @@ const EXTRACTION_RULES: ExtractionRule[] = [
 
   // ---- 计划 ----
   {
-    pattern: /(计划|打算|准备|决定|想去|要去|要做|想做)(.{2,30})/,
+    pattern: /(计划|打算|准备|决定|想去|要去|要做|想做|要开始|准备开始)(.{2,30})/,
     category: 'plan',
     normalize: (m) => `用户计划：${m[2].replace(/[。！？!?]/g, '').trim()}`,
   },
 
   // ---- 重大事件 ----
   {
-    pattern: /我(今天|昨天|上周|上个月|最近|刚|刚才|前几天)(.{4,40})/,
+    pattern: /我(今天|昨天|上周|上个月|最近|刚|刚才|前几天|这周|这个月)(.{4,40})/,
     category: 'event',
     normalize: (m) => `用户${m[1]}${m[2].replace(/[。！？!?]/g, '').trim()}`,
   },
@@ -123,9 +123,23 @@ const EXTRACTION_RULES: ExtractionRule[] = [
 
   // ---- 习惯 ----
   {
-    pattern: /我(每天|经常|总是|一直|习惯|一般都|平时)(.{3,30})/,
+    pattern: /我(每天|经常|总是|一直|习惯|一般都|平时|通常)(.{3,30})/,
     category: 'habit',
     normalize: (m) => `用户习惯：${m[1]}${m[2].replace(/[。！？!?]/g, '').trim()}`,
+  },
+
+  // ---- 情感状态（补充常见表达）----
+  {
+    pattern: /我(最近|最近一段时间|这段时间|最近在)(.{3,30}(累|忙|压力|开心|难过|烦|焦虑|低落|不好|调整|适应|搬家|换|新|刚))/,
+    category: 'state',
+    normalize: (m) => `用户最近：${m[1]}${m[2].replace(/[。！？!?]/g, '').trim()}`,
+  },
+
+  // ---- 工作/学习变动 ----
+  {
+    pattern: /(毕业|入职|辞职|跳槽|升职|加薪|创业|考研|考公|考编|转行|找工作中|面试|拿offer)/,
+    category: 'career',
+    normalize: (m) => `用户动态：${m[0].replace(/[。！？!?]/g, '').trim()}`,
   },
 ];
 

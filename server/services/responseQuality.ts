@@ -31,10 +31,6 @@ export function polishReplies(rawText: string, options: ReplyQualityOptions): st
   const uniqueReplies = dedupeAdjacent(replies).slice(0, 3);
   if (uniqueReplies.length === 0) return [options.fallback || '你这句我接住了'];
 
-  if (uniqueReplies.length === 1 && isLowInformation(uniqueReplies[0])) {
-    return [uniqueReplies[0], '然后呢，继续说'];
-  }
-
   return uniqueReplies;
 }
 

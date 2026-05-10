@@ -40,30 +40,33 @@ const IMPORTANCE_RULES: ImportanceRule[] = [
   { pattern: /我(在|住|老家|家在|来自).{0,10}(市|省|区|县|镇|国|城市)/, score: 4, category: 'location' },
   { pattern: /(爸|妈|父亲|母亲|哥|姐|弟|妹|爷爷|奶奶|外公|外婆|儿子|女儿)/, score: 4, category: 'family' },
   { pattern: /我(叫|名字|姓|今年|岁|属)/, score: 4, category: 'identity' },
+  { pattern: /(毕业|入职|辞职|跳槽|升职|加薪|创业|考研|考公|考编|转行|面试)/, score: 4, category: 'career' },
 
   // 3 分 — 偏好 / 计划
-  { pattern: /我(喜欢|讨厌|不喜欢|爱吃|不爱吃|最怕|最爱|受不了)/, score: 3, category: 'preference' },
+  { pattern: /我(喜欢|讨厌|不喜欢|爱吃|不爱吃|最怕|最爱|受不了|偏好|反感)/, score: 3, category: 'preference' },
   { pattern: /(计划|打算|准备|决定|想去|要去|要做|目标|梦想)/, score: 3, category: 'plan' },
   { pattern: /(养了|有一只|有一个|家里有|我家).{0,6}(猫|狗|宠物|鱼|兔|仓鼠|鸟)/, score: 3, category: 'pet' },
-  { pattern: /(毕业|入职|辞职|跳槽|升职|加薪|创业|考研|考公)/, score: 3, category: 'career' },
+  { pattern: /(搬家|换了|换了新|刚到)/, score: 3, category: 'event' },
 
   // 2 分 — 情绪 / 事件
-  { pattern: /(开心|难过|伤心|生气|烦|崩溃|焦虑|压力|委屈|感动|幸福|郁闷|无聊|孤独|害怕|紧张|兴奋|激动)/, score: 2, category: 'emotion' },
-  { pattern: /我(今天|昨天|上周|上个月|最近|刚才|之前).{4,}/, score: 2, category: 'event' },
+  { pattern: /(开心|难过|伤心|生气|烦|崩溃|焦虑|压力|委屈|感动|幸福|郁闷|无聊|孤独|害怕|紧张|兴奋|激动|累|忙|低落)/, score: 2, category: 'emotion' },
+  { pattern: /我(今天|昨天|上周|上个月|最近|刚才|之前|这周|这个月).{4,}/, score: 2, category: 'event' },
   { pattern: /我(觉得|认为|感觉|发现).{4,}/, score: 2, category: 'opinion' },
 
   // 1 分 — 习惯
-  { pattern: /(每天|经常|总是|一直|习惯|一般都|平时)/, score: 1, category: 'habit' },
+  { pattern: /(每天|经常|总是|一直|习惯|一般都|平时|通常)/, score: 1, category: 'habit' },
 ];
 
 const LOW_VALUE_PATTERNS = [
-  /^(嗯+|哈+|哦+|啊+|嘿+|呵+|额+|唔+|emm+|ok+|好+的?|行+|对+|是+的?|在+吗?|嗯嗯+|哈哈+|呜呜+|嘻嘻+|噢+|啊?这+|可以|没事|随便|都行|无所谓|算了)$/i,
+  /^(嗯+|哈+|哦+|啊+|嘿+|呵+|额+|唔+|emm+|ok+|好+的?|行+|对+|是+的?|在+吗?|嗯嗯+|哈哈+|呜呜+|嘻嘻+|噢+|啊?这+|可以|没事|随便|都行|无所谓|算了|好嘞|好哒|收到|懂了|知道啦|了解|明白)$/,
   /^.{0,3}$/,
   /^[?？!！.。,，~～…\s]+$/,
-  /^(你好|hi|hello|hey|晚安|早安|拜拜|再见|88|886|gn|gm|谢谢|不客气|没关系)$/i,
-  /^(你在吗|在不在|忙吗|睡了吗|吃了吗|干嘛呢|你呢|然后呢|真的吗|是吗|啊是吗)$/,
-  /^(想我了吗|想我没|有没有想我|是不是想我|爱不爱我|喜欢我吗|在不在乎我|我重要吗|会不会离开我)$/,
-  /^(我)?(想你了?|爱你|喜欢你|抱抱|亲亲|贴贴|mua|宝宝|宝贝|老婆|老公)$/,
+  /^(你好|hi|hello|hey|晚安|早安|拜拜|再见|88|886|gn|gm|谢谢|不客气|没关系|早|晚|午安)$/i,
+  /^(你在吗|在不在|忙吗|睡了吗|吃了吗|干嘛呢|你呢|然后呢|真的吗|是吗|啊是吗|说啥|啥|啥意思|发生什么|怎么了)$/,
+  /^(想我了吗|想我没|有没有想我|是不是想我|爱不爱我|喜欢我吗|在不在乎我|我重要吗|会不会离开我|hmm+|mhm+)$/,
+  /^(我)?(想你了?|爱你|喜欢你|抱抱|亲亲|贴贴|mua|宝宝|宝贝|老婆|老公|亲爱滴)$/,
+  /^(好的|好呀|好吧|行吧|可以呀|没问题|当然|必须的|确实|就是|对对|对呀|是吧|可不是嘛)$/,
+  /^(哈哈哈哈|hhhh+|hhh+|哼|哼哼|略略|emmm+|害|哎)$/,
 ];
 
 /**
@@ -95,16 +98,16 @@ export function shouldStoreAsMemory(text: string): boolean {
     if (pattern.test(trimmed)) return false;
   }
 
-  // 长度 < 5 且没命中任何高价值规则
-  if (trimmed.length < 5) return false;
+// 长度 < 6 且没命中任何高价值规则
+  if (trimmed.length < 6) return false;
 
   // 命中任意重要性规则
   for (const rule of IMPORTANCE_RULES) {
     if (rule.pattern.test(trimmed)) return true;
   }
 
-  // 12 字以上的消息有一定信息量；放宽写入，方便后续上下文召回。
-  if (trimmed.length >= 12) return true;
+  // 15 字以上的消息有一定信息量；放宽写入，方便后续上下文召回。
+  if (trimmed.length >= 15) return true;
 
   return false;
 }
