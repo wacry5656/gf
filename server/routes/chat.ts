@@ -884,9 +884,9 @@ export function buildInteractionPrompt(currentUserText: string, relationshipMode
   } else if (casualKind === 'laugh') {
     hints.push('对方在笑或起哄，接个梗或追问半句，不用正经回复。');
   } else if (casualKind === 'ack') {
-    hints.push('对方只是简短接话，保持口语化短回复，不要客服式总结，不要重复上一句模板。');
+    hints.push('对方只是简短接话，顺着当前聊的话题自然回应，不要只回"我在"或"你继续"。');
   } else if (casualKind === 'emoji') {
-    hints.push('对方发了表情或标点，随口回一句就行。');
+    hints.push('对方发了表情或标点，顺着话题随口回一句，不要只回"？"。');
   }
 
   // 具体场景处理
@@ -970,6 +970,7 @@ export function buildSystemPrompt({ character, personalitySummary, emotionPrompt
     '',
     outputHint,
     '有问直接回答不绕弯。对方发一两个字你也保持短。不主动扩写成段落。',
+    '对方发"嗯/好/哦"时，要接着当前话题回应，绝对不能只说"我在"或"你继续"。',
   );
 
   if (interactionPrompt) {
@@ -1022,7 +1023,9 @@ export function cleanReply(
     .replace(/\n\s*\n/g, '\n')
     .trim();
 
-  return shapeReplyForInput(cleaned || fallbackReply, currentUserText, relationshipMode, recentMessages);
+  // 只有在清洗后内容为空，或内容本身是完全通用的敷衍句时，才使用 fallback
+  const finalReply = ensureReplyQuality(cleaned, fallbackReply, currentUserText, recentMessages);
+  return finalReply;
 }
 
 function recentAssistantTexts(messages: ChatMessage[], limit = 4): string[] {
@@ -1213,45 +1216,63 @@ function buildFallbackReply(
 }
 
 function isGenericAckReply(text: string): boolean {
-  return /^(我在听|我听着呢?|慢慢说|你继续说|继续说|我在|嗯，我在|嗯嗯，我在|听着呢|你说|然后呢)[。.!！?？]*$/.test(text.trim());
+  return /^(我在听|我听着呢?|慢慢说|你继续说|继续说|我在|嗯，我在|嗯嗯，我在|听着呢|你说|然后呢|行|好|嗯|哦|知道了|收到)[。.!！?？]*$/.test(text.trim());
 }
 
-function shapeReplyForInput(
-  reply: string,
+/**
+ * 确保回复质量：
+ * - ack（嗯/好/哦）：完全信任LLM的上下文回复，不强制fallback
+ * - 其他低信息输入：若LLM回复过长，适当fallback，但带问号的互动回复保留
+ * - 通用情况：只fallback空内容、重复内容、LLM自己生成的敷衍句
+ */
+function ensureReplyQuality(
+  cleanedReply: string,
+  fallbackReply: string,
   currentUserText: string,
-  relationshipMode: 'lover' | 'friend',
   recentMessages: ChatMessage[] = []
 ): string {
-  const casualKind = detectCasualMessageKind(currentUserText);
-  if (!casualKind) return reply;
+  if (!cleanedReply.trim()) return fallbackReply;
 
-  const fallback = buildFallbackReply(currentUserText, relationshipMode, recentMessages);
-  const firstLine = reply
+  const firstLine = cleanedReply
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean)[0] || fallback;
-  const firstSentence = firstLine.match(/[^。！？!?~～]+[。！？!?~～]?/)?.[0]?.trim() || firstLine;
-  const maxLengthByKind: Record<CasualMessageKind, number> = {
-    availability: 8,
-    praise: 14,
-    laugh: 16,
-    ack: 12,
-    emoji: 14,
-  };
+    .filter(Boolean)[0] || '';
 
-  const normalized = firstSentence.replace(/\s+/g, '');
-  const repeatedRecently = recentAssistantTexts(recentMessages).some(text => text.replace(/\s+/g, '') === normalized);
-  const repeatedCasualCount = countConsecutiveUserCasual(recentMessages, currentUserText, casualKind);
+  const casualKind = detectCasualMessageKind(currentUserText);
 
-  if (
-    casualKind === 'ack' &&
-    (isGenericAckReply(firstSentence) || repeatedRecently || repeatedCasualCount >= 2)
-  ) {
-    return fallback;
+  // ack（嗯/好/哦/收到等）：必须信任LLM的上下文回复
+  if (casualKind === 'ack') {
+    // 如果LLM自己生成了通用敷衍句，用fallback
+    if (isGenericAckReply(firstLine)) return fallbackReply;
+    // 检查重复
+    const normalized = firstLine.replace(/\s+/g, '');
+    const repeated = recentAssistantTexts(recentMessages).some(text => text.replace(/\s+/g, '') === normalized);
+    if (repeated) return fallbackReply;
+    return cleanedReply;
   }
 
-  if (firstSentence.length <= maxLengthByKind[casualKind] && !repeatedRecently) return firstSentence;
-  return fallback;
+  // 其他低信息输入：若LLM回复带问号（在尝试互动），保留；否则过长就fallback
+  if (casualKind) {
+    const maxLength: Record<CasualMessageKind, number> = {
+      availability: 10,
+      praise: 16,
+      laugh: 18,
+      ack: 999,
+      emoji: 14,
+    };
+    // 带问号的回复说明LLM在互动，保留
+    if (/[？?]/.test(firstLine)) return cleanedReply;
+    // 过长且无互动性，fallback
+    if (firstLine.length > maxLength[casualKind]) return fallbackReply;
+  }
+
+  // 通用检查：LLM自己敷衍、或重复
+  if (isGenericAckReply(firstLine)) return fallbackReply;
+  const normalized = firstLine.replace(/\s+/g, '');
+  const repeated = recentAssistantTexts(recentMessages).some(text => text.replace(/\s+/g, '') === normalized);
+  if (repeated) return fallbackReply;
+
+  return cleanedReply;
 }
 
 function isBadChatLine(line: string): boolean {
