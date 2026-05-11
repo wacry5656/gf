@@ -618,35 +618,30 @@ async function buildChatContext(
   }
 
   if (coreMemories.length > 0 || memories.length > 0) {
-    const memoryLines: string[] = [];
+    const memoryTexts: string[] = [];
     const usedMemoryIds: number[] = [];
     const seenTexts = new Set<string>(); // 精确文本去重
     let usedMemoryTokens = 0;
 
-    const pushMemoryLine = (m: import('../services/memory').MemoryResult, prefix = '') => {
-      // 精确文本去重
+    const pushMemory = (m: import('../services/memory').MemoryResult) => {
       if (seenTexts.has(m.text)) return;
       seenTexts.add(m.text);
-
-      const line = prefix ? `${prefix}${m.text}` : m.text;
-      const lineTokens = estimateTokens(line);
-      if (usedChars + line.length + 2 > maxContextChars) return;
+      const lineTokens = estimateTokens(m.text);
+      if (usedChars + m.text.length + 2 > maxContextChars) return;
       if (usedMemoryTokens + lineTokens > memoryConfig.memoryTokenBudget) return;
-      memoryLines.push(line);
+      memoryTexts.push(m.text);
       usedMemoryIds.push(m.id);
-      usedChars += line.length + 1;
+      usedChars += m.text.length + 1;
       usedMemoryTokens += lineTokens;
     };
 
-    for (const m of coreMemories) {
-      pushMemoryLine(m, '★ ');
-    }
-    for (const m of memories) {
-      pushMemoryLine(m);
-    }
-    if (memoryLines.length > 0) {
-      memoryBlock = `\n你记得关于对方的事（自然提到就好，不要主动翻旧账或莫名其妙提起）：\n${memoryLines.join('\n')}\n`;
-      // 记录命中
+    for (const m of coreMemories) pushMemory(m);
+    for (const m of memories) pushMemory(m);
+
+    if (memoryTexts.length > 0) {
+      // 把记忆串联成自然句子，避免列表感
+      const joined = memoryTexts.join('；');
+      memoryBlock = `\n你记得对方${joined}。自然提到就好，别主动翻旧账。\n`;
       recordMemoryHits(usedMemoryIds);
     }
   }
@@ -693,7 +688,8 @@ interface SystemPromptParams {
 interface PersonalityStyleProfile {
   label: string;
   summary: string;
-  hardRules: string[];
+  /** 自然语言描述的语气约束，不再是规则列表 */
+  toneHint: string;
   examples: string[];
   maxMessages: number;
   maxCharsPerMessage: number;
@@ -706,7 +702,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
   const defaultProfile: PersonalityStyleProfile = {
     label: '自然型',
     summary: '像真实微信聊天的人，认真接话，短句自然。',
-    hardRules: ['先接对方刚说的话', '不表演人设', '不写小说句'],
+    toneHint: '先接对方刚说的话，不表演人设，不写小说句。',
     examples: ['嗯，在', '你说呢', '我听着'],
     maxMessages: compactOutput ? 2 : 3,
     maxCharsPerMessage: compactOutput ? 18 : 28,
@@ -717,7 +713,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       profile: {
         label: '克制型',
         summary: '话少，收着，但该回的会回。',
-        hardRules: ['最多1到2条短消息', '不阴阳怪气', '不用沉默替代回复', '不说教'],
+        toneHint: '最多一两句短消息，不阴阳怪气，不用沉默替代回复，不说教。',
         examples: ['嗯', '知道了', '你先说'],
         maxMessages: 2,
         maxCharsPerMessage: 18,
@@ -728,7 +724,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       profile: {
         label: '亲近型',
         summary: '会自然追问，适度亲近，不过度。',
-        hardRules: ['可以追问一句', '不连续撒娇', '不写成恋爱游戏台词', '不连续问多个问题'],
+        toneHint: '可以追问一句，但不连续撒娇，不写恋爱游戏台词，不连续问多个问题。',
         examples: ['那你呢', '在听', '继续说'],
         maxMessages: activeOutput ? 3 : 2,
         maxCharsPerMessage: 24,
@@ -739,7 +735,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       profile: {
         label: '直球型',
         summary: '直接说想法，不绕弯。',
-        hardRules: ['直接答', '不铺垫', '不写心理活动'],
+        toneHint: '直接回答不铺垫，不写心理活动，不突然发脾气。',
         examples: ['就是这样的', '我不太喜欢', '行'],
         maxMessages: 2,
         maxCharsPerMessage: 24,
@@ -750,7 +746,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       profile: {
         label: '温柔型',
         summary: '语气柔和，先接住情绪再回应。',
-        hardRules: ['别说教', '别长篇安慰', '不强行煽情', '短句为主'],
+        toneHint: '别说教，别长篇安慰，不强行煽情，以短句为主。',
         examples: ['没事，慢慢说', '我在', '先别急'],
         maxMessages: compactOutput ? 2 : 3,
         maxCharsPerMessage: compactOutput ? 18 : 28,
@@ -761,7 +757,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       profile: {
         label: '轻松型',
         summary: '轻松自然，偶尔开玩笑，不刷屏。',
-        hardRules: ['口语化', '不连续玩梗', '不装可爱过头'],
+        toneHint: '口语化表达，不连续玩梗，不装可爱过头。',
         examples: ['哈哈还行', '有意思', '可以啊'],
         maxMessages: activeOutput ? 3 : 2,
         maxCharsPerMessage: 24,
@@ -772,7 +768,7 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
       profile: {
         label: '毒舌型',
         summary: '嘴毒但心不坏，该说的还是说。',
-        hardRules: ['毒舌但不辱骂', '不骂人不冷暴力', '关键时会关心'],
+        toneHint: '毒舌但不辱骂，不骂人不冷暴力，关键时刻还是会关心对方。',
         examples: ['你认真的吗', '行吧', '啧'],
         maxMessages: 2,
         maxCharsPerMessage: 22,
@@ -790,76 +786,63 @@ function resolvePersonalityStyle(personality: string, description: string): Pers
     }
   }
 
-return bestScore > 0 ? bestProfile : defaultProfile;
+  return bestScore > 0 ? bestProfile : defaultProfile;
 }
 
-function buildOutputRules(profile: PersonalityStyleProfile): string[] {
-  return [
-    `最多${profile.maxMessages}条消息，每条不超过${profile.maxCharsPerMessage}字`,
-    ...profile.hardRules,
-    '每条必须是想发给对方看的文字，不是写小说',
-    '不能输出动作、状态、旁白、心理描写',
-  ];
+/** 输出约束转为一行自然描述 */
+function buildOutputHint(profile: PersonalityStyleProfile): string {
+  return `发${profile.maxMessages}条消息以内，每条别超过${profile.maxCharsPerMessage}字。${profile.toneHint}只能发文字，不能写动作状态旁白。`;
 }
 
-function resolveEmotionHardRules(
-  mood?: Mood,
-  emotionBlock?: string
-): string[] {
-  const moodRules: Partial<Record<Mood, string[]>> = {
-    warm: ['语气自然，不要刻意甜或冷淡'],
-    happy: ['可以微微轻快一点，但仍然短'],
-    playful: ['最多一句轻松玩笑，不连续玩梗'],
-    shy: ['语气收一点，但必须正常回话'],
-    caring: ['优先接住情绪，别长篇安慰'],
-    upset: ['更短更克制，要说出不满但不能只沉默'],
-    jealous: ['只轻描淡写一句在意，禁止阴阳怪气或控制对方'],
-    sulking: ['比平时短，语气带一点别扭，但不能不回人或用动作代替'],
-    distant: ['更收着，但要正常回答问题'],
-    disappointed: ['语气稍低落，但不消极冷淡，仍然接话'],
-    anticipating: ['语气稍主动，但不过度热情'],
+/** 情绪约束转为一行自然描述 */
+function resolveEmotionHint(mood?: Mood, emotionBlock?: string): string {
+  const moodHints: Partial<Record<Mood, string>> = {
+    warm: '语气自然，不要刻意甜或冷淡。',
+    happy: '可以微微轻快一点，但仍然短。',
+    playful: '最多一句轻松玩笑，不连续玩梗。',
+    shy: '语气收一点，但必须正常回话。',
+    caring: '优先接住情绪，别长篇安慰。',
+    upset: '更短更克制，要说出不满但不能只沉默。',
+    jealous: '只轻描淡写一句在意，禁止阴阳怪气或控制对方。',
+    sulking: '比平时短，语气带一点别扭，但不能不回人或用动作代替。',
+    distant: '更收着，但要正常回答问题。',
+    disappointed: '语气稍低落，但不消极冷淡，仍然接话。',
+    anticipating: '语气稍主动，但不过度热情。',
   };
 
-  if (mood && moodRules[mood]) {
-    return moodRules[mood]!;
+  if (mood && moodHints[mood]) {
+    return moodHints[mood]!;
   }
   if (emotionBlock?.includes('生闷气') || emotionBlock?.includes('别扭')) {
-    return ['缩短回复，语气带一点别扭，但必须回话'];
+    return '缩短回复，语气带一点别扭，但必须回话。';
   }
   if (emotionBlock?.includes('委屈') || emotionBlock?.includes('不开心') || emotionBlock?.includes('收着一点')) {
-    return ['更短更克制，但要说清楚不满'];
+    return '更短更克制，但要说清楚不满。';
   }
   if (emotionBlock?.includes('心情不错') || emotionBlock?.includes('自然亲近') || emotionBlock?.includes('照顾用户情绪')) {
-    return ['语气自然一点，不要刻意甜'];
+    return '语气自然一点，不要刻意甜。';
   }
   if (emotionBlock?.includes('俏皮')) {
-    return ['最多一句轻松玩笑，禁止连续玩梗'];
+    return '最多一句轻松玩笑，禁止连续玩梗。';
   }
   if (emotionBlock?.includes('在意') || emotionBlock?.includes('吃醋')) {
-    return ['只表现一点在意，禁止阴阳怪气或占有欲台词'];
+    return '只表现一点在意，禁止阴阳怪气或占有欲台词。';
   }
   if (emotionBlock?.includes('害羞')) {
-    return ['语气收一点，但必须正常回话'];
+    return '语气收一点，但必须正常回话。';
   }
   if (emotionBlock?.includes('期待')) {
-    return ['语气稍主动，但不刷屏'];
+    return '语气稍主动，但不刷屏。';
   }
-  return ['只微调语气和主动性，不改变聊天形式'];
+  return '只微调语气和主动性，不改变聊天形式。';
 }
 
-function resolveRelationshipRules(character: ChatRequestBody['character']): string[] {
+/** 关系约束转为一行自然描述 */
+function resolveRelationshipHint(character: ChatRequestBody['character']): string {
   if (character.relationshipMode === 'friend') {
-    return [
-      '按熟人/朋友聊天，不用恋人称呼',
-      '不吃醋，不宣示占有，不给暧昧信号',
-      '关心可以说但像朋友那种关心，不煽情',
-    ];
+    return '按熟人朋友聊天，不用恋人称呼，不吃醋不宣示占有，关心也是朋友式的，不煽情。';
   }
-  return [
-    '可以像恋人聊天，但日常短消息，不写偶像剧台词',
-    '吃醋只允许一句轻微在意，不阴阳怪气、不控制、不质问',
-    '不用每句都叫宝宝/老婆/老公，只有上下文合适时偶尔用',
-  ];
+  return '像恋人聊天，但日常短消息不写偶像剧台词。吃醋只一句轻微在意，不阴阳怪气不控制。不用每句都叫宝宝，合适时偶尔用。';
 }
 
 type CasualMessageKind = 'availability' | 'praise' | 'laugh' | 'ack' | 'emoji';
@@ -890,62 +873,63 @@ function detectCasualMessageKind(currentUserText: string): CasualMessageKind | n
 export function buildInteractionPrompt(currentUserText: string, relationshipMode: 'lover' | 'friend'): string | undefined {
   if (!currentUserText.trim()) return undefined;
   const audit = auditInteraction(currentUserText, relationshipMode);
-  const rules: string[] = [];
+  const hints: string[] = [];
   const casualKind = detectCasualMessageKind(currentUserText);
 
+  // 低信息消息处理
   if (casualKind === 'availability') {
-    rules.push('用户只是在确认你在不在，直接短答，不延长成解释、安慰或剧情。');
+    hints.push('对方在确认你在不在，直接短答，不用解释太多。');
   } else if (casualKind === 'praise') {
-    rules.push('用户只是随口夸或感叹，轻松接住，可以顺手接半句，不要突然煽情、正式致谢或上价值。');
+    hints.push('对方只是随口夸或感叹，轻松接住就好，不用上价值。');
   } else if (casualKind === 'laugh') {
-    rules.push('用户只是笑或起哄，轻松接梗或追问半句，不要正经安慰或长回复。');
-  } else if (casualKind === 'ack' || casualKind === 'emoji') {
-    rules.push('用户只是简短接话，保持口语化短回复，不要客服式总结，不要硬扩写成长段，不要重复上一句模板。');
+    hints.push('对方在笑或起哄，接个梗或追问半句，不用正经回复。');
+  } else if (casualKind === 'ack') {
+    hints.push('对方只是简短接话，保持口语化短回复，不要客服式总结，不要重复上一句模板。');
+  } else if (casualKind === 'emoji') {
+    hints.push('对方发了表情或标点，随口回一句就行。');
   }
 
+  // 具体场景处理
   if (audit.reassuranceSeeking) {
-    rules.push('用户在索取确认感，直接短答并给一点确定感，不要反问，不要顺势提高亲密度。');
+    hints.push('对方在索取确认感，直接短答给点确定感，不要反问。');
   }
   if (audit.intimateExpression && !audit.reassuranceSeeking && !audit.canIncreaseBond) {
-    rules.push('用户只是亲密表达，接住即可，不要自我感动、不要升级剧情。');
+    hints.push('对方只是亲密表达，接住就行，别自我感动。');
   }
   if (audit.canIncreaseBond) {
-    rules.push('用户有真实关心、修复或承诺，先自然接住，再给一句具体回应。');
+    hints.push('对方有关心或承诺，自然接住再给一句具体回应。');
   }
   if (audit.repair) {
-    rules.push('用户在道歉或修复关系，接受 sincerity 但不刻意煽情。');
+    hints.push('对方在道歉，接受 sincerity 但不刻意煽情。');
   }
   if (audit.coquettish) {
-    rules.push('用户在撒娇，自然回应，可以稍微顺着接一句但不要过度甜腻。');
+    hints.push('对方在撒娇，顺着接一句但不过度甜腻。');
   }
   if (audit.sharing) {
-    rules.push('用户在分享日常，认真接住话题，可以追问一个具体细节，但不要变成百科问答。');
+    hints.push('对方在分享日常，认真接住，可以追问一个具体细节。');
   }
   if (audit.boredComplaint) {
-    rules.push('用户在吐槽或抱怨无聊，轻松陪聊，可以接一句日常的话题，不要长篇安慰或说教。');
+    hints.push('对方在吐槽无聊，轻松陪聊，接一句日常话题。');
   }
   if (audit.probing) {
-    rules.push('用户在试探你的态度，直接但自然地回应，不回避也不刻意升华。');
+    hints.push('对方在试探态度，直接自然回应，不回避也不升华。');
   }
   if (audit.partnerConflict) {
-    rules.push('用户提出分手、另有对象或替换关系，要表达受伤/边界，但仍用短消息正常沟通。');
+    hints.push('对方提到分手或其他人，表达受伤但仍正常沟通。');
   } else if (audit.thirdParty) {
-    rules.push('用户提到第三者，只轻微表达在意，不控制、不阴阳怪气，一句话就够了。');
+    hints.push('对方提到第三者，只轻微表达在意，一句话就够。');
   }
   if (audit.attack || audit.cold) {
-    rules.push('用户语气冷淡或攻击，回复更短，指出具体感受，不辱骂、不冷暴力。');
+    hints.push('对方语气冷淡或带刺，回复更短，指出感受但不骂回去。');
   }
-  if (audit.isQuestion && rules.length === 0) {
-    rules.push('用户在问问题，第一句必须直接回答。');
+  if (audit.isQuestion && hints.length === 0) {
+    hints.push('对方在问问题，第一句直接回答。');
   }
-  if (rules.length === 0) {
-    rules.push('按最近一句自然接话，不主动扩写剧情。');
+  if (hints.length === 0) {
+    hints.push('自然接话，不主动扩写。');
   }
 
-  return [
-    `这句属于：${casualKind || audit.primaryEvent || '普通聊天'}`,
-    ...rules,
-  ].join('\n');
+  return hints.join(' ');
 }
 
 /**
@@ -960,40 +944,39 @@ export function buildSystemPrompt({ character, personalitySummary, emotionPrompt
   const relationshipBlock = relationshipPrompt || (character.relationshipMode === 'friend'
     ? '你们是普通朋友，日常闲聊。'
     : '你们是恋人，日常微信式聊天。');
-  const personalityHardRules = personalityStyle.hardRules.map(rule => `- ${rule}`).join('\n');
-  const outputRules = buildOutputRules(personalityStyle).map(rule => `- ${rule}`).join('\n');
-  const emotionRules = resolveEmotionHardRules(emotionMood, emotionBlock).map(rule => `- ${rule}`).join('\n');
-  const relationshipRules = resolveRelationshipRules(character).map(rule => `- ${rule}`).join('\n');
+  const outputHint = buildOutputHint(personalityStyle);
+  const emotionHint = resolveEmotionHint(emotionMood, emotionBlock);
+  const relationshipHint = resolveRelationshipHint(character);
 
   const roleGender = character.gender === 'male' ? '男生' : character.gender === 'female' ? '女生' : '人';
   const userGender = character.userGender === 'female' ? '女生' : '男生';
   const relation = character.relationshipMode === 'friend' ? '朋友' : '恋人';
 
-  const blocks = [
-    `你是${character.name}，${roleGender}，和对方（${userGender}）是${relation}关系。你在微信里给人发消息，不是AI、不是乙游角色、不写小说。`,
+  const parts: string[] = [
+    `你是${character.name}，${roleGender}，和对方（${userGender}）是${relation}关系。你在微信里给人发消息，不是AI、不是乙游角色、不写小说。禁止输出动作描写、状态描写、心理描写、旁白。`,
     '',
-    '禁止输出：动作描写、状态描写、心理描写、旁白、用省略号代替回复、客服语气。只能发文字消息。',
-    '',
-    `性格：${personalityStyle.summary}`,
-    personalityHardRules,
-    `参考语气（绝不逐字抄）：${personalityStyle.examples.join('、')}`,
-    personalitySummary ? `\n你了解对方的：${personalitySummary}` : '',
-    '',
-    `心情：${emotionBlock}`,
-    emotionRules,
-    '',
-    `关系：${relationshipBlock}`,
-    relationshipRules,
-    '',
-    interactionPrompt ? `怎么接这句：${interactionPrompt}` : '',
-    '',
-    outputRules,
-    '- 有问直接回答，不绕弯',
-    '- 对方发一两个字，你也保持短',
-    '- 不主动扩写成段落',
-  ].join('\n');
+    `性格：${personalityStyle.summary} ${personalityStyle.toneHint}参考语气（绝不逐字抄）：${personalityStyle.examples.join('、')}。`,
+  ];
 
-  return blocks.trim();
+  if (personalitySummary) {
+    parts.push(`你了解对方：${personalitySummary}`);
+  }
+
+  parts.push(
+    '',
+    `${emotionBlock} ${emotionHint}`,
+    '',
+    `${relationshipBlock} ${relationshipHint}`,
+    '',
+    outputHint,
+    '有问直接回答不绕弯。对方发一两个字你也保持短。不主动扩写成段落。',
+  );
+
+  if (interactionPrompt) {
+    parts.push('', interactionPrompt);
+  }
+
+  return parts.join('\n').trim();
 }
 
 /**
@@ -1077,41 +1060,160 @@ function pickVariant(options: string[], currentUserText: string, recentMessages:
   return options[seed % options.length];
 }
 
+const ACK_FALLBACK_LOVER = [
+  '嗯哼', '那你继续', '我看着呢', '行，接着说', '知道啦',
+  '嗯呢', '听着', '你说', '在呢', 'okk',
+  '嗯呐', '继续', '听着呢', '好哦', '嗯',
+  '行', '好', '你说吧', '我在', '好嘞',
+];
+
+const ACK_FALLBACK_FRIEND = [
+  '嗯', '行，你继续', '收到', '接着说',
+  'okk', '听着', '你说', '好', '行',
+  '嗯呢', '好嘞', '知道', '继续', '你说吧',
+];
+
 function buildFallbackReply(
   currentUserText: string,
   relationshipMode: 'lover' | 'friend',
   recentMessages: ChatMessage[] = []
 ): string {
-  if (!currentUserText.trim()) return '我在';
+  if (!currentUserText.trim()) return pickVariant(['在', '在呢', '嗯'], currentUserText, recentMessages);
   const casualKind = detectCasualMessageKind(currentUserText);
-  if (casualKind === 'availability') return relationshipMode === 'lover' ? '在呢' : '在';
-  if (casualKind === 'praise') return relationshipMode === 'lover' ? '那我收下了' : '这句我记下了';
-  if (casualKind === 'laugh') return '你笑什么';
-  if (casualKind === 'ack') {
+
+  if (casualKind === 'availability') {
     return pickVariant(
       relationshipMode === 'lover'
-        ? ['嗯哼', '那你继续', '我看着呢', '行，接着说', '知道啦']
-        : ['嗯', '行，你继续', '收到', '接着说'],
+        ? ['在呢', '在', '嗯，在', '在的']
+        : ['在', '嗯', '在的'],
       currentUserText,
-      recentMessages
+      recentMessages,
     );
   }
-  if (casualKind === 'emoji') return '怎么突然发这个';
+
+  if (casualKind === 'praise') {
+    return pickVariant(
+      relationshipMode === 'lover'
+        ? ['那我收下了', '算你会说', '这句我爱听', '嘿嘿']
+        : ['这句我记下了', '可以', '谢了'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (casualKind === 'laugh') {
+    return pickVariant(
+      ['你笑什么', '笑啥', '这么好笑', '哈哈', '笑死我了'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (casualKind === 'ack') {
+    return pickVariant(
+      relationshipMode === 'lover' ? ACK_FALLBACK_LOVER : ACK_FALLBACK_FRIEND,
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (casualKind === 'emoji') {
+    return pickVariant(
+      ['怎么突然发这个', '嗯？', '咋了', '？'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
   const audit = auditInteraction(currentUserText, relationshipMode);
-  if (audit.partnerConflict) return '你这样说，我会难受';
-  if (audit.attack || audit.cold) return '你刚刚这句有点伤人';
-  if (audit.reassuranceSeeking) return relationshipMode === 'lover' ? '想啊，我在' : '在，我记得你';
-  if (audit.intimateExpression) return relationshipMode === 'lover' ? '我也在想你' : '我在呢';
-  if (audit.coquettish) return relationshipMode === 'lover' ? '好了好了，我在' : '行吧行吧';
-  if (audit.probing) return '你觉得呢';
-  if (audit.boredComplaint) return '那聊点啥';
-  if (audit.sharing) return '然后呢';
-  if (audit.isQuestion) return '在，你说';
-  return '我在听';
+
+  if (audit.partnerConflict) {
+    return pickVariant(
+      ['你这样说，我会难受', '别这样', '你认真的吗'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.attack || audit.cold) {
+    return pickVariant(
+      ['你刚刚这句有点伤人', '怎么突然这样', '我哪惹你了'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.reassuranceSeeking) {
+    return pickVariant(
+      relationshipMode === 'lover'
+        ? ['想啊，我在', '在呢', '当然想']
+        : ['在，我记得你', '在呢'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.intimateExpression) {
+    return pickVariant(
+      relationshipMode === 'lover'
+        ? ['我也在想你', '嗯', '我也是']
+        : ['我在呢', '嗯'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.coquettish) {
+    return pickVariant(
+      relationshipMode === 'lover'
+        ? ['好了好了，我在', '乖', '知道啦']
+        : ['行吧行吧', '好了'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.probing) {
+    return pickVariant(
+      ['你觉得呢', '看情况', '还行吧'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.boredComplaint) {
+    return pickVariant(
+      ['那聊点啥', '想聊什么', '无聊了？'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.sharing) {
+    return pickVariant(
+      ['然后呢', '后来呢', '接着说'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  if (audit.isQuestion) {
+    return pickVariant(
+      ['在，你说', '你说', '听着呢'],
+      currentUserText,
+      recentMessages,
+    );
+  }
+
+  return pickVariant(
+    ['我在', '嗯', '你说'],
+    currentUserText,
+    recentMessages,
+  );
 }
 
 function isGenericAckReply(text: string): boolean {
-  return /^(我在听|我听着|慢慢说|你继续说|继续说|我在|嗯，我在|嗯嗯，我在)[。.!！?？]*$/.test(text.trim());
+  return /^(我在听|我听着呢?|慢慢说|你继续说|继续说|我在|嗯，我在|嗯嗯，我在|听着呢|你说|然后呢)[。.!！?？]*$/.test(text.trim());
 }
 
 function shapeReplyForInput(
@@ -1163,6 +1265,10 @@ function isBadChatLine(line: string): boolean {
   if (/^(突然|然后|接着).{0,12}(骂人|沉默|安静|发呆)/.test(normalized)) return true;
   if (/^(红着脸|脸红|心跳|心一动|胸口)/.test(normalized)) return true;
   if (/^(感觉|觉得|似乎|仿佛)/.test(normalized) && normalized.length < 12) return true;
+  // 过滤明显的小说/乙游状态句
+  if (/^(时间|空间|周围|四周|面前|身后|身后|身旁|身边).{0,8}(安静|沉默|凝固|停滞)/.test(normalized)) return true;
+  if (/^(嘴角|眉眼|眼神|目光|眼底|眸中|眸光).{0,8}(弯了|柔了|闪了|暗了|沉了)/.test(normalized)) return true;
+  if (/^(指尖|手指|手|掌心|手背).{0,8}(收紧|松开|握紧|颤抖|冰凉|温热)/.test(normalized)) return true;
   return false;
 }
 
