@@ -28,6 +28,7 @@ function createFixture(mode: 'lover' | 'friend' = 'lover'): { userId: number; ch
 
 function cleanup(userId: number, characterId: number): void {
   db.prepare('DELETE FROM chat_messages WHERE character_id = ?').run(characterId);
+  db.prepare('DELETE FROM emotion_snapshots WHERE character_id = ?').run(characterId);
   db.prepare('DELETE FROM emotion_state WHERE character_id = ?').run(characterId);
   db.prepare('DELETE FROM relationship_state WHERE character_id = ?').run(characterId);
   db.prepare('DELETE FROM memories WHERE character_id = ?').run(characterId);

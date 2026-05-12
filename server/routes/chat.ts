@@ -13,6 +13,7 @@ import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
 import { estimateTokens, fitRecentMessagesToBudget, trimToTokenBudget, totalMessageTokens } from '../utils/tokenBudget';
 import { ensureCharacterOwnership } from '../utils/ownership';
+import { checkMilestone, generateMilestoneGreeting } from '../services/milestone';
 import db from '../db';
 
 export const chatRouter = Router();
@@ -148,6 +149,15 @@ function scheduleChatFollowUps(characterId: number | undefined, currentUserText:
       try { updateRelationshipState(userId, characterId, currentUserText, assistantReply); } catch (error) { console.error('[Relationship] update failed:', error); }
     });
   }
+
+  setImmediate(() => {
+    try {
+      const m = checkMilestone(characterId);
+      if (m.detected) {
+        generateMilestoneGreeting(characterId, m.milestone, m.detail).catch(() => {});
+      }
+    } catch {}
+  });
 }
 
 /**
@@ -983,6 +993,15 @@ export function buildSystemPrompt({ character, personalitySummary, emotionPrompt
 
   if (interactionPrompt) {
     parts.push('', interactionPrompt);
+  }
+
+  const hour = new Date().getHours();
+  if (hour >= 0 && hour < 7) {
+    parts.push('', '现在是深夜，你有点困，回复更短更慢，偶尔打哈欠，但还是回话。');
+  } else if (hour >= 7 && hour < 9) {
+    parts.push('', '现在是早晨，你刚醒不久，回复会稍慢，像赖床时发消息的感觉。');
+  } else if (hour >= 23) {
+    parts.push('', '现在很晚了，你有点困但还没睡，回复变短变慢。');
   }
 
   return parts.join('\n').trim();

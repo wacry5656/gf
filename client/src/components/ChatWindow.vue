@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Character, ChatMessage, EmotionInfo, RelationshipInfo } from '../api'
-import { checkInitiativeEligibility, clearMessages, generateInitiativeMessage, getEmotion, getRelationship, saveMessage, searchMessages, sendMessage, sendMessageStream, StreamChatError } from '../api'
+import { checkInitiativeEligibility, checkLongAbsence, clearMessages, generateInitiativeMessage, getEmotion, getRelationship, recallLastMessage, saveMessage, searchMessages, sendMessage, sendMessageStream, StreamChatError, triggerRandomEvent } from '../api'
 import type { SearchResult } from '../api'
 import { clearChatDraft, getChatDraft, saveChatDraft } from '../userSession'
 import MemoryPanel from './MemoryPanel.vue'
@@ -45,6 +45,18 @@ function displayPersonality(raw: string): string {
     .replace(/^(自然|温和|直率|轻松|克制|慢热|毒舌)[:：]\s*/, '$1：')
     .replace(/[。.]?$/, '')
 }
+
+const bubbleTone = computed(() => {
+  const p = (props.character.personality || '').toLowerCase()
+  const d = (props.character.description || '').toLowerCase()
+  const t = p + ' ' + d
+  if (/温柔|治愈|体贴|暖/.test(t)) return 'warm'
+  if (/毒舌|暴躁|冷淡|高冷/.test(t)) return 'cool'
+  if (/活泼|开朗|轻松|幽默|元气/.test(t)) return 'sunny'
+  if (/傲娇|别扭|克制/.test(t)) return 'cool'
+  if (/直球|主动|坦率/.test(t)) return 'sunny'
+  return 'natural'
+})
 
 const moodEmoji = computed(() => {
   const map: Record<string, string> = {
@@ -115,6 +127,22 @@ async function fetchStatus() {
 
   emotionInfo.value = emotionResult.status === 'fulfilled' ? emotionResult.value : null
   relationshipInfo.value = relationshipResult.status === 'fulfilled' ? relationshipResult.value : null
+}
+
+async function checkAndShowLongAbsence() {
+  if (!props.character?.id || !props.userId) return
+  try {
+    const result = await checkLongAbsence(props.character.id, props.userId)
+    if (result.absent && result.greeting.length > 0) {
+      const updated = [...props.messages]
+      for (const msg of result.greeting) {
+        updated.push({ role: 'assistant', content: msg })
+      }
+      emit('update:messages', updated)
+    }
+  } catch {
+    // silent
+  }
 }
 
 onMounted(fetchStatus)
@@ -261,6 +289,22 @@ async function onClearHistory() {
   }
 }
 
+async function onRecallLast() {
+  if (!props.character.id) return
+  if (loading.value) return
+  const last = props.messages[props.messages.length - 1]
+  if (!last || last.role !== 'user') return
+  const content = last.content
+  try {
+    await recallLastMessage(props.character.id, props.userId, 'user')
+    const updated = props.messages.slice(0, -1)
+    emit('update:messages', updated)
+    inputText.value = content
+  } catch (e: any) {
+    error.value = e?.message || '撤回失败'
+  }
+}
+
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -303,6 +347,19 @@ async function checkAndSendInitiative() {
   if (lastMsg.role !== 'user') return
 
   try {
+    // 先尝试随机事件（15%概率触发）
+    const randomResult = await triggerRandomEvent(props.character.id, props.userId)
+    if (randomResult.triggered && randomResult.replies.length > 0) {
+      initiativeLoading.value = true
+      const finalMessages = [...props.messages]
+      for (const reply of randomResult.replies) {
+        finalMessages.push({ role: 'assistant', content: reply })
+      }
+      emit('update:messages', finalMessages)
+      fetchStatus()
+      return
+    }
+
     const eligibility = await checkInitiativeEligibility(
       props.character.id,
       props.userId,
@@ -348,8 +405,8 @@ async function checkAndSendInitiative() {
 }
 
 onMounted(() => {
-  fetchStatus()
   startInitiativePolling()
+  checkAndShowLongAbsence()
 })
 
 onUnmounted(() => {
@@ -374,13 +431,14 @@ async function doSearch() {
 function highlightText(text: string, query: string): string {
   if (!query) return text
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const safeText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const regex = new RegExp(`(${escaped})`, 'gi')
-  return text.replace(regex, '<mark>$1</mark>')
+  return safeText.replace(regex, '<mark>$1</mark>')
 }
 </script>
 
 <template>
-  <div class="chat-shell">
+  <div class="chat-shell" :class="`tone-${bubbleTone}`">
     <!-- Mobile panel overlay -->
     <Transition name="slide">
       <div v-if="showMobilePanel" class="mobile-panel-overlay" @click="showMobilePanel = false">
@@ -468,6 +526,12 @@ function highlightText(text: string, query: string): string {
           <span class="header-status">{{ moodEmoji }} {{ moodLabel }} · {{ phaseLabel }}</span>
         </div>
         <div class="header-actions">
+          <button
+            v-if="messages.length > 0 && messages[messages.length - 1].role === 'user'"
+            class="tool-button"
+            :disabled="loading"
+            @click="onRecallLast"
+          >撤回</button>
           <button class="tool-button" @click="showSearch = true">搜索</button>
           <button class="tool-button" @click="showMemoryPanel = true">记忆</button>
           <button
@@ -1487,5 +1551,17 @@ function highlightText(text: string, query: string): string {
   font-size: 0.72rem;
   color: #d1d5db;
   flex-shrink: 0;
+}
+
+.chat-shell.tone-warm { --bot-bubble-tint: #fce7f3; --bot-text-tint: #9d174d; --user-bubble-tint: var(--user-bubble); }
+.chat-shell.tone-cool  { --bot-bubble-tint: #e0e7ff; --bot-text-tint: #3730a3; --user-bubble-tint: var(--user-bubble); }
+.chat-shell.tone-sunny { --bot-bubble-tint: #fef9c3; --bot-text-tint: #854d0e; --user-bubble-tint: var(--user-bubble); }
+.chat-shell.tone-natural { --bot-bubble-tint: var(--bot-bubble); --bot-text-tint: var(--text-primary); --user-bubble-tint: var(--user-bubble); }
+
+.chat-shell.tone-warm .msg-bot .msg-bubble,
+.chat-shell.tone-cool .msg-bot .msg-bubble,
+.chat-shell.tone-sunny .msg-bot .msg-bubble {
+  background: var(--bot-bubble-tint);
+  color: var(--bot-text-tint);
 }
 </style>

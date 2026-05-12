@@ -20,8 +20,6 @@ import { getSummary } from './summary';
 import { getPersonalityTraits, getUserIdFromCharacter } from './personality';
 import { searchMemory, getCoreMemories, recordMemoryHits } from './memory';
 import type { MemoryResult } from './memory';
-import { getEmbedding } from './embedding';
-import { cosineSimilarity } from '../utils/similarity';
 
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -43,7 +41,22 @@ const CONFIG = {
   cooldownMinutes: 5,
   maxPerDay: 5,
   maxPerSession: 2,
+  sleepStartHour: 0,
+  sleepEndHour: 7,
 };
+
+function isSleepTime(): boolean {
+  const hour = new Date().getHours();
+  return hour >= CONFIG.sleepStartHour && hour < CONFIG.sleepEndHour;
+}
+
+function getScheduleDelay(): number {
+  const hour = new Date().getHours();
+  if (hour >= 0 && hour < 7) return 8000 + Math.floor(Math.random() * 12000);
+  if (hour >= 7 && hour < 9) return 3000 + Math.floor(Math.random() * 4000);
+  if (hour >= 23) return 5000 + Math.floor(Math.random() * 8000);
+  return 1000 + Math.floor(Math.random() * 3000);
+}
 
 /**
  * 检查当前是否可以发送主动消息
@@ -52,6 +65,11 @@ export function checkInitiativeEligibility(
   characterId: number,
   sessionInitiativeCount: number
 ): { eligible: boolean; reason?: string } {
+  // 0. 作息时间：深夜不主动发消息
+  if (isSleepTime()) {
+    return { eligible: false, reason: '作息时间：深夜休息中' };
+  }
+
   // 1. 每次会话最多 2 条
   if (sessionInitiativeCount >= CONFIG.maxPerSession) {
     return { eligible: false, reason: '本次会话已达主动消息上限' };
@@ -95,6 +113,128 @@ export function checkInitiativeEligibility(
   }
 
   return { eligible: true };
+}
+
+export function checkLongAbsence(characterId: number): { absent: boolean; daysSince: number } {
+  const lastMsg = db.prepare(
+    "SELECT created_at FROM chat_messages WHERE character_id = ? ORDER BY id DESC LIMIT 1"
+  ).get(characterId) as { created_at: string } | undefined;
+
+  if (!lastMsg) return { absent: false, daysSince: 0 };
+
+  const daysSince = (Date.now() - new Date(lastMsg.created_at).getTime()) / 86400000;
+  return { absent: daysSince >= 3, daysSince };
+}
+
+export async function generateLongAbsenceGreeting(
+  character: Character,
+  characterId: number,
+  daysSince: number,
+): Promise<string[]> {
+  const userId = getUserIdFromCharacter(characterId);
+  const emotionState = userId ? getEmotionState(userId, characterId) : null;
+
+  const roleGender = character.gender === 'male' ? '男生' : character.gender === 'female' ? '女生' : '人';
+  const userGender = character.userGender === 'female' ? '女生' : '男生';
+  const relation = character.relationshipMode === 'friend' ? '朋友' : '恋人';
+  const moodText = emotionState?.mood === 'warm' ? '还行' : emotionState?.mood === 'happy' ? '不错' : '一般';
+
+  const systemPrompt = `你是${character.name}，${roleGender}，和对方（${userGender}）是${relation}关系。你在微信里给人发消息。对方已经${Math.round(daysSince)}天没跟你说话了，你想自然地打个招呼。心情${moodText}。要求：1~2条短消息，像真实的人好久没联系时发的那句。不要太煽情，不写动作旁白。`;
+
+  try {
+    const raw = await callQwenAPI(
+      [{ role: 'system', content: systemPrompt }],
+      150,
+    );
+    const cleaned = cleanInitiativeReply(raw, character.name);
+    const replies = splitInitiativeReply(cleaned);
+    if (replies.length === 0) return [];
+
+    const insertAll = db.transaction(() => {
+      for (const reply of replies) {
+        db.prepare('INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)')
+          .run(characterId, 'assistant', reply);
+      }
+      db.prepare('INSERT INTO initiative_log (character_id, trigger_reason, content) VALUES (?, ?, ?)')
+        .run(characterId, 'long_absence', replies.join('\n'));
+    });
+    insertAll();
+
+    return replies;
+  } catch {
+    return [];
+  }
+}
+
+const RANDOM_EVENT_SCENARIOS = [
+  '今天加班好累，想吐槽一下',
+  '刚看到一个超好笑的视频',
+  '突然想起一件之前聊过的事',
+  '今天吃了顿好吃的',
+  '刚才出门遇到一只很可爱的猫',
+  '刷到一个好玩的帖子',
+  '今天天气突然变了',
+  '刚听了一首好听的歌',
+  '下班路上突然想找人说话',
+];
+
+export function shouldTriggerRandomEvent(characterId: number): boolean {
+  if (isSleepTime()) return false;
+
+  const lastMsg = db.prepare(
+    "SELECT created_at FROM chat_messages WHERE character_id = ? ORDER BY id DESC LIMIT 1"
+  ).get(characterId) as { created_at: string } | undefined;
+  if (!lastMsg) return false;
+
+  const idleMinutes = (Date.now() - new Date(lastMsg.created_at).getTime()) / 60000;
+  if (idleMinutes < 5) return false;
+
+  const todayRandom = db.prepare(
+    "SELECT COUNT(*) as cnt FROM initiative_log WHERE character_id = ? AND trigger_reason = 'random_event' AND date(created_at) = date('now')"
+  ).get(characterId) as { cnt: number };
+  if (todayRandom.cnt >= 2) return false;
+
+  return Math.random() < 0.15;
+}
+
+export async function generateRandomEvent(
+  character: Character,
+  characterId: number,
+): Promise<string[]> {
+  const userId = getUserIdFromCharacter(characterId);
+  const emotionState = userId ? getEmotionState(userId, characterId) : null;
+
+  const roleGender = character.gender === 'male' ? '男生' : character.gender === 'female' ? '女生' : '人';
+  const userGender = character.userGender === 'female' ? '女生' : '男生';
+  const relation = character.relationshipMode === 'friend' ? '朋友' : '恋人';
+
+  const scenario = RANDOM_EVENT_SCENARIOS[Math.floor(Math.random() * RANDOM_EVENT_SCENARIOS.length)];
+
+  const systemPrompt = `你是${character.name}，${roleGender}，和对方（${userGender}）是${relation}关系。你在微信里给人发消息。场景：${scenario}。要求：1~2条短消息，像真实的人随口分享日常。不写动作旁白，不过度热情。`;
+
+  try {
+    const raw = await callQwenAPI(
+      [{ role: 'system', content: systemPrompt }],
+      150,
+    );
+    const cleaned = cleanInitiativeReply(raw, character.name);
+    const replies = splitInitiativeReply(cleaned);
+    if (replies.length === 0) return [];
+
+    const insertAll = db.transaction(() => {
+      for (const reply of replies) {
+        db.prepare('INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)')
+          .run(characterId, 'assistant', reply);
+      }
+      db.prepare('INSERT INTO initiative_log (character_id, trigger_reason, content) VALUES (?, ?, ?)')
+        .run(characterId, 'random_event', replies.join('\n'));
+    });
+    insertAll();
+
+    return replies;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -187,15 +327,15 @@ export async function generateInitiativeMessage(
     return [];
   }
 
-  // 保存到 chat_messages
-  for (const reply of replies) {
-    db.prepare('INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)')
-      .run(characterId, 'assistant', reply);
-  }
-
-  // 记录到 initiative_log
-  db.prepare('INSERT INTO initiative_log (character_id, trigger_reason, content) VALUES (?, ?, ?)')
-    .run(characterId, 'user_idle', replies.join('\n'));
+  const insertAll = db.transaction(() => {
+    for (const reply of replies) {
+      db.prepare('INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)')
+        .run(characterId, 'assistant', reply);
+    }
+    db.prepare('INSERT INTO initiative_log (character_id, trigger_reason, content) VALUES (?, ?, ?)')
+      .run(characterId, 'user_idle', replies.join('\n'));
+  });
+  insertAll();
 
   // 记录记忆命中
   if (usedMemoryIds.length > 0) {

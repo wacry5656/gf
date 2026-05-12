@@ -134,6 +134,20 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS emotion_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    mood TEXT NOT NULL,
+    affection REAL NOT NULL,
+    trust_score REAL NOT NULL,
+    jealousy_score REAL NOT NULL,
+    anger_score REAL NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
+
   CREATE TABLE IF NOT EXISTS initiative_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     character_id INTEGER NOT NULL,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import type { MemoryItem, SummaryInfo, PersonalityTraitItem, DiaryEntry, ReminderItem, ChatStats } from '../api'
-import { getMemories, deleteMemory, getSummaryInfo, getPersonalityTraitsList, getDiaryEntries, getReminders, deleteReminder, getChatStats } from '../api'
+import type { MemoryItem, SummaryInfo, PersonalityTraitItem, DiaryEntry, ReminderItem, ChatStats, EmotionSnapshot } from '../api'
+import { getMemories, deleteMemory, getSummaryInfo, getPersonalityTraitsList, getDiaryEntries, getReminders, deleteReminder, getChatStats, getEmotionHistory } from '../api'
 
 const props = defineProps<{
   characterId: number
@@ -15,6 +15,7 @@ const traits = ref<PersonalityTraitItem[]>([])
 const diaryEntries = ref<DiaryEntry[]>([])
 const reminders = ref<ReminderItem[]>([])
 const stats = ref<ChatStats | null>(null)
+const emotionSnapshots = ref<EmotionSnapshot[]>([])
 const loading = ref(false)
 const error = ref('')
 const deletingId = ref<number | null>(null)
@@ -29,7 +30,29 @@ const memoryTypeColor: Record<string, string> = {
 
 const hasContent = computed(() => {
   return summaryInfo.value?.summary || traits.value.length > 0 || memories.value.length > 0
-    || diaryEntries.value.length > 0 || stats.value
+    || diaryEntries.value.length > 0 || stats.value || emotionSnapshots.value.length > 0
+})
+
+const emotionChart = computed(() => {
+  const snapshots = emotionSnapshots.value
+  if (snapshots.length < 2) return null
+  const moodScoreMap: Record<string, number> = {
+    happy: 5, warm: 4, playful: 4, anticipating: 3.5, caring: 3.5, shy: 3,
+    disappointed: 2, sulking: 1.5, jealous: 1.5, distant: 1, upset: 0.5,
+  }
+  const points = snapshots.map((s, i) => ({
+    x: i,
+    y: moodScoreMap[s.mood] ?? 3,
+    affection: Math.round(s.affection * 100),
+    label: s.created_at.slice(5, 10),
+  }))
+  const maxY = 5
+  const width = 280
+  const height = 80
+  const stepX = snapshots.length > 1 ? width / (snapshots.length - 1) : 0
+  const toY = (v: number) => height - (v / maxY) * height
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i * stepX).toFixed(1)},${toY(p.y).toFixed(1)}`).join(' ')
+  return { pathD, width, height, points, stepX, toY, maxY }
 })
 
 const weekLabels = ['日', '一', '二', '三', '四', '五', '六']
@@ -39,13 +62,14 @@ async function loadData() {
   loading.value = true
   error.value = ''
   try {
-    const [memoriesResult, summaryResult, traitsResult, diaryResult, remindersResult, statsResult] = await Promise.allSettled([
+    const [memoriesResult, summaryResult, traitsResult, diaryResult, remindersResult, statsResult, emotionResult] = await Promise.allSettled([
       getMemories(props.characterId, props.userId),
       getSummaryInfo(props.characterId, props.userId),
       getPersonalityTraitsList(props.characterId, props.userId),
       getDiaryEntries(props.characterId, props.userId),
       getReminders(props.characterId, props.userId),
       getChatStats(props.characterId, props.userId),
+      getEmotionHistory(props.characterId, props.userId),
     ])
 
     if (memoriesResult.status === 'fulfilled') memories.value = memoriesResult.value
@@ -54,6 +78,7 @@ async function loadData() {
     if (diaryResult.status === 'fulfilled') diaryEntries.value = diaryResult.value
     if (remindersResult.status === 'fulfilled') reminders.value = remindersResult.value
     if (statsResult.status === 'fulfilled') stats.value = statsResult.value
+    if (emotionResult.status === 'fulfilled') emotionSnapshots.value = emotionResult.value
   } catch (e: any) {
     error.value = e?.message || '加载失败'
   } finally {
@@ -130,6 +155,30 @@ onMounted(loadData)
     <div v-else class="memory-content">
       <!-- 画像 -->
       <div v-if="activeTab === 'summary'" class="tab-content">
+        <div v-if="emotionChart" class="emotion-chart-section">
+          <div class="section-label">情绪走势（近30天）</div>
+          <div class="emotion-chart">
+            <svg :viewBox="`0 0 ${emotionChart.width} ${emotionChart.height + 16}`" class="emotion-svg">
+              <line x1="0" :y1="emotionChart.height" :x2="emotionChart.width" :y2="emotionChart.height" stroke="#e5e7eb" stroke-width="0.5" />
+              <line x1="0" y1="0" x2="0" :y2="emotionChart.height" stroke="#e5e7eb" stroke-width="0.5" />
+              <path :d="emotionChart.pathD" fill="none" stroke="#8b5cf6" stroke-width="1.5" stroke-linejoin="round" />
+              <g v-for="(pt, i) in emotionChart.points" :key="i">
+                <circle :cx="(i * emotionChart.stepX).toFixed(1)" :cy="emotionChart.toY(pt.y).toFixed(1)" r="2" fill="#8b5cf6" />
+              </g>
+            </svg>
+            <div class="emotion-chart-labels" v-if="emotionChart.points.length > 0">
+              <span class="chart-label-first">{{ emotionChart.points[0]?.label }}</span>
+              <span class="chart-label-last">{{ emotionChart.points[emotionChart.points.length - 1]?.label }}</span>
+            </div>
+          </div>
+          <div class="emotion-legend">
+            <span class="legend-item"><span class="legend-dot happy"></span>开心</span>
+            <span class="legend-item"><span class="legend-dot warm"></span>温暖</span>
+            <span class="legend-item"><span class="legend-dot neutral"></span>平静</span>
+            <span class="legend-item"><span class="legend-dot low"></span>低落</span>
+          </div>
+        </div>
+
         <div v-if="summaryInfo?.summary" class="summary-section">
           <div class="section-label">整体印象</div>
           <div class="summary-text">{{ summaryInfo.summary }}</div>
@@ -274,7 +323,19 @@ onMounted(loadData)
 
 .section-label { font-size: 0.72rem; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
 
-.summary-section, .traits-section, .reminders-section { background: var(--app-bg, #f9fafb); padding: 12px; border-radius: 12px; }
+.summary-section, .traits-section, .reminders-section, .emotion-chart-section { background: var(--app-bg, #f9fafb); padding: 12px; border-radius: 12px; }
+
+.emotion-chart-section { margin-bottom: 2px; }
+.emotion-svg { width: 100%; height: auto; }
+.emotion-chart-labels { display: flex; justify-content: space-between; margin-top: 2px; }
+.chart-label-first, .chart-label-last { font-size: 0.68rem; color: #9ca3af; }
+.emotion-legend { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+.legend-item { display: flex; align-items: center; gap: 3px; font-size: 0.72rem; color: #6b7280; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.legend-dot.happy { background: #10b981; }
+.legend-dot.warm { background: #8b5cf6; }
+.legend-dot.neutral { background: #3b82f6; }
+.legend-dot.low { background: #f59e0b; }
 .summary-text { font-size: 0.88rem; color: var(--text-primary, #374151); line-height: 1.6; }
 .traits-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .trait-tag { padding: 4px 12px; border-radius: 999px; background: linear-gradient(135deg, #ede9fe, #fce7f3); color: #6b21a8; font-size: 0.82rem; }

@@ -336,6 +336,11 @@ export function updateEmotionState(
          stability_score = ?, last_trigger = ?, updated_at = datetime('now')
      WHERE user_id = ? AND character_id = ?`
   ).run(mood, affection, trust_score, jealousy_score, anger_score, stability_score, trigger, userId, characterId);
+
+  db.prepare(
+    `INSERT INTO emotion_snapshots (user_id, character_id, mood, affection, trust_score, jealousy_score, anger_score)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(userId, characterId, mood, affection, trust_score, jealousy_score, anger_score);
 }
 
 /**

@@ -412,6 +412,20 @@ export async function clearMessages(characterId: number, userId: number): Promis
   if (!res.ok) throw new Error(data?.error || '清空消息失败');
 }
 
+export async function recallLastMessage(characterId: number, userId: number, role: string): Promise<void> {
+  const res = await fetchApi(
+    `/api/data/messages/${characterId}/last?userId=${userId}&role=${role}`,
+    { method: 'DELETE' },
+    '撤回消息失败'
+  );
+  const data = await readJsonApiResponse<ApiStatusPayload>(
+    res,
+    '撤回消息失败',
+    getApiProxyHint('撤回消息失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '撤回消息失败');
+}
+
 // ====== 情绪状态 ======
 
 export interface EmotionInfo {
@@ -434,6 +448,30 @@ export async function getEmotion(characterId: number, userId: number): Promise<E
     );
   } catch {
     return null;
+  }
+}
+
+export interface EmotionSnapshot {
+  mood: string;
+  affection: number;
+  trust_score: number;
+  jealousy_score: number;
+  anger_score: number;
+  created_at: string;
+}
+
+export async function getEmotionHistory(characterId: number, userId: number, days = 30): Promise<EmotionSnapshot[]> {
+  try {
+    const res = await fetchApi(`/api/data/emotion-history/${characterId}?userId=${userId}&days=${days}`, undefined, '获取情绪历史失败');
+    if (!res.ok) return [];
+    const data = await readJsonApiResponse<{ snapshots: EmotionSnapshot[] }>(
+      res,
+      '获取情绪历史失败',
+      getApiProxyHint('获取情绪历史失败')
+    );
+    return data?.snapshots || [];
+  } catch {
+    return [];
   }
 }
 
@@ -508,6 +546,24 @@ export async function generateInitiativeMessage(
   );
   if (!res.ok) throw new Error(data?.error || '生成主动消息失败');
   return data?.replies || [];
+}
+
+export async function triggerRandomEvent(characterId: number, userId: number): Promise<{ triggered: boolean; replies: string[] }> {
+  try {
+    const res = await fetchApi(`/api/data/random-event/${characterId}?userId=${userId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }, '随机事件失败');
+    if (!res.ok) return { triggered: false, replies: [] };
+    return await readJsonApiResponse<{ triggered: boolean; replies: string[] }>(
+      res,
+      '随机事件失败',
+      getApiProxyHint('随机事件失败')
+    );
+  } catch {
+    return { triggered: false, replies: [] };
+  }
 }
 
 // ====== 记忆可视化 ======
@@ -806,6 +862,20 @@ export async function sendMessageStream(
 
   console.log(`[sendMessageStream] 流结束: characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);
   return recoveredReplies;
+}
+
+export async function checkLongAbsence(characterId: number, userId: number): Promise<{ absent: boolean; daysSince?: number; greeting: string[] }> {
+  try {
+    const res = await fetchApi(`/api/data/long-absence/${characterId}?userId=${userId}`, undefined, '检查久别寒暄失败');
+    if (!res.ok) return { absent: false, greeting: [] };
+    return await readJsonApiResponse<{ absent: boolean; daysSince?: number; greeting: string[] }>(
+      res,
+      '检查久别寒暄失败',
+      getApiProxyHint('检查久别寒暄失败')
+    );
+  } catch {
+    return { absent: false, greeting: [] };
+  }
 }
 
 // ====== 日记 ======

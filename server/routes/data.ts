@@ -3,7 +3,7 @@ import db from '../db';
 import { readEmotionState, type Mood } from '../services/emotion';
 import { readRelationshipState, type RelationshipPhase } from '../services/relationship';
 import { ensureCharacterOwnership } from '../utils/ownership';
-import { checkInitiativeEligibility, generateInitiativeMessage } from '../services/initiative';
+import { checkInitiativeEligibility, generateInitiativeMessage, checkLongAbsence, generateLongAbsenceGreeting, shouldTriggerRandomEvent, generateRandomEvent } from '../services/initiative';
 import { getMemoryCount, getAllMemoryTexts, searchMemory, getCoreMemories } from '../services/memory';
 import { getSummary } from '../services/summary';
 import { getPersonalityTraits, getUserIdFromCharacter } from '../services/personality';
@@ -125,6 +125,10 @@ dataRouter.delete('/characters/:id', (req: Request, res: Response) => {
       db.prepare('DELETE FROM memory_summaries WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM emotion_state WHERE character_id = ?').run(charId);
       db.prepare('DELETE FROM relationship_state WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM initiative_log WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM diary_entries WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM reminders WHERE character_id = ?').run(charId);
+      db.prepare('DELETE FROM emotion_snapshots WHERE character_id = ?').run(charId);
       // 删除角色记录（额外检查 user_id 作为安全防护，防止 TOCTOU 竞态）
       const result = db.prepare('DELETE FROM characters WHERE id = ? AND user_id = ?').run(charId, userId);
       // 如果用户已无其他角色，清理其 personality_memory
@@ -242,6 +246,33 @@ dataRouter.delete('/messages/:characterId', (req: Request, res: Response) => {
   }
 });
 
+// 撤回最后一条消息
+dataRouter.delete('/messages/:characterId/last', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+    const role = (req.query.role as string) || 'user';
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const lastMsg = db.prepare(
+      'SELECT id FROM chat_messages WHERE character_id = ? AND role = ? ORDER BY id DESC LIMIT 1'
+    ).get(characterId, role) as { id: number } | undefined;
+
+    if (!lastMsg) {
+      res.status(404).json({ error: '没有可撤回的消息' });
+      return;
+    }
+
+    db.prepare('DELETE FROM chat_messages WHERE id = ?').run(lastMsg.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Recall message error:', err?.message);
+    res.status(500).json({ error: '撤回消息失败' });
+  }
+});
+
 // ====== 情绪状态 ======
 
 const MOOD_LABEL: Record<string, string> = {
@@ -292,6 +323,37 @@ dataRouter.get('/emotion/:characterId', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Get emotion error:', err?.message);
     res.status(500).json({ error: '获取情绪状态失败' });
+  }
+});
+
+dataRouter.get('/emotion-history/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+    const days = Math.min(30, Math.max(1, Number(req.query.days) || 30));
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const snapshots = db.prepare(
+      `SELECT mood, affection, trust_score, jealousy_score, anger_score, created_at
+       FROM emotion_snapshots
+       WHERE character_id = ? AND user_id = ?
+         AND created_at >= datetime('now', '-' || ? || ' days')
+       ORDER BY created_at ASC`
+    ).all(characterId, userId, days) as Array<{
+      mood: string;
+      affection: number;
+      trust_score: number;
+      jealousy_score: number;
+      anger_score: number;
+      created_at: string;
+    }>;
+
+    res.json({ snapshots });
+  } catch (err: any) {
+    console.error('Get emotion history error:', err?.message);
+    res.status(500).json({ error: '获取情绪历史失败' });
   }
 });
 
@@ -382,6 +444,61 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Generate initiative error:', err?.message);
     res.status(500).json({ error: '生成主动消息失败' });
+  }
+});
+
+dataRouter.post('/random-event/:characterId', async (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    if (!shouldTriggerRandomEvent(characterId)) {
+      res.json({ triggered: false, replies: [] });
+      return;
+    }
+
+    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId) as any;
+    if (!character) {
+      res.json({ triggered: false, replies: [] });
+      return;
+    }
+
+    const replies = await generateRandomEvent(character, characterId);
+    res.json({ triggered: true, replies });
+  } catch (err: any) {
+    console.error('Random event error:', err?.message);
+    res.status(500).json({ error: '随机事件生成失败' });
+  }
+});
+
+dataRouter.get('/long-absence/:characterId', async (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const { absent, daysSince } = checkLongAbsence(characterId);
+    if (!absent) {
+      res.json({ absent: false, greeting: [] });
+      return;
+    }
+
+    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId) as any;
+    if (!character) {
+      res.json({ absent: false, greeting: [] });
+      return;
+    }
+
+    const greeting = await generateLongAbsenceGreeting(character, characterId, daysSince);
+    res.json({ absent: true, daysSince, greeting });
+  } catch (err: any) {
+    console.error('Long absence error:', err?.message);
+    res.status(500).json({ error: '久别寒暄失败' });
   }
 });
 
