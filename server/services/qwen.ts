@@ -9,10 +9,6 @@ const MAX_RETRIES = 2;
 
 /**
  * 根据用户输入长度动态决定 max_tokens
- *
- * 短输入（< 20字，如"在吗""你好"）通常只需简短回复 → 400
- * 中等输入（20~100字，日常聊天）需要适中回复空间 → 600
- * 长输入（> 100字，倾诉/复杂话题）需要更充分的回复 → 900
  */
 export function getMaxTokens(userInput: string): number {
   const len = userInput.trim().length;
@@ -21,31 +17,62 @@ export function getMaxTokens(userInput: string): number {
   return 900;
 }
 
-function getApiConfig() {
-  const apiKey = process.env.QWEN_API_KEY;
-  const baseUrl = process.env.QWEN_BASE_URL;
-  const model = process.env.QWEN_MODEL || 'qwen-turbo';
-  const timeoutMs = Number(process.env.QWEN_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-  const temperature = Number(process.env.QWEN_TEMPERATURE) || 0.85;
-  const topP = Number(process.env.QWEN_TOP_P) || 0.9;
+interface ApiConfig {
+  apiKey: string;
+  apiUrl: string;
+  model: string;
+  timeoutMs: number;
+  temperature: number;
+  topP: number;
+  provider: 'deepseek' | 'qwen';
+}
 
-  if (!apiKey || apiKey === 'your_api_key_here') {
-    console.error('[Qwen] QWEN_API_KEY 未配置或为默认值');
-    throw new Error('请在 .env 文件中配置 QWEN_API_KEY');
+function getApiConfig(): ApiConfig {
+  // 优先检查 DeepSeek 配置
+  const dsKey = process.env.DEEPSEEK_API_KEY;
+  const dsBase = process.env.DEEPSEEK_BASE_URL;
+  const dsModel = process.env.DEEPSEEK_MODEL;
+
+  if (dsKey && dsKey !== 'your_api_key_here') {
+    return {
+      apiKey: dsKey,
+      apiUrl: `${(dsBase || 'https://api.deepseek.com').replace(/\/+$/, '')}/chat/completions`,
+      model: dsModel || 'deepseek-chat',
+      timeoutMs: Number(process.env.DEEPSEEK_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+      temperature: Number(process.env.DEEPSEEK_TEMPERATURE) || 0.85,
+      topP: Number(process.env.DEEPSEEK_TOP_P) || 0.9,
+      provider: 'deepseek',
+    };
   }
 
-  if (!baseUrl) {
-    console.error('[Qwen] QWEN_BASE_URL 未配置');
-    throw new Error('请在 .env 文件中配置 QWEN_BASE_URL（如 https://dashscope.aliyuncs.com/compatible-mode/v1）');
+  // Fallback 到 Qwen
+  const qwenKey = process.env.QWEN_API_KEY;
+  const qwenBase = process.env.QWEN_BASE_URL;
+  const qwenModel = process.env.QWEN_MODEL;
+
+  if (!qwenKey || qwenKey === 'your_api_key_here') {
+    console.error('[LLM] DEEPSEEK_API_KEY 和 QWEN_API_KEY 均未配置');
+    throw new Error('请在 .env 文件中配置 DEEPSEEK_API_KEY 或 QWEN_API_KEY');
   }
 
-  const apiUrl = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  if (!qwenBase) {
+    console.error('[LLM] QWEN_BASE_URL 未配置');
+    throw new Error('请在 .env 文件中配置 QWEN_BASE_URL');
+  }
 
-  return { apiKey, apiUrl, model, timeoutMs, temperature, topP };
+  return {
+    apiKey: qwenKey,
+    apiUrl: `${qwenBase.replace(/\/+$/, '')}/chat/completions`,
+    model: qwenModel || 'qwen-turbo',
+    timeoutMs: Number(process.env.QWEN_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+    temperature: Number(process.env.QWEN_TEMPERATURE) || 0.85,
+    topP: Number(process.env.QWEN_TOP_P) || 0.9,
+    provider: 'qwen',
+  };
 }
 
 export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): Promise<string> {
-  const { apiKey, apiUrl, model, timeoutMs, temperature, topP } = getApiConfig();
+  const { apiKey, apiUrl, model, timeoutMs, temperature, topP, provider } = getApiConfig();
 
   let lastError: Error | null = null;
 
@@ -74,8 +101,7 @@ export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): 
 
       if (!response.ok) {
         const errorText = await response.text();
-        const err = new Error(`Qwen API 返回错误 (${response.status}): ${errorText}`);
-        // 4xx errors are not retryable
+        const err = new Error(`${provider} API 返回错误 (${response.status}): ${errorText}`);
         if (response.status >= 400 && response.status < 500) throw err;
         throw err;
       }
@@ -84,7 +110,7 @@ export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): 
       const content = data?.choices?.[0]?.message?.content;
 
       if (!content) {
-        throw new Error('Qwen API 返回数据格式异常');
+        throw new Error(`${provider} API 返回数据格式异常`);
       }
 
       return content;
@@ -93,10 +119,9 @@ export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): 
       lastError = err;
 
       if (err.name === 'AbortError') {
-        lastError = new Error('Qwen API 请求超时，请稍后重试');
+        lastError = new Error(`${provider} API 请求超时，请稍后重试`);
       }
 
-      // Don't retry on 4xx client errors
       if (err.message?.includes('返回错误 (4')) {
         throw err;
       }
@@ -107,12 +132,11 @@ export async function callQwenAPI(messages: ChatMessage[], maxTokens?: number): 
     }
   }
 
-  throw lastError || new Error('Qwen API 调用失败');
+  throw lastError || new Error('API 调用失败');
 }
 
 /**
- * 流式调用 Qwen API，每收到一个 chunk 调用 onChunk 回调
- * 返回完整的回复文本
+ * 流式调用 API，每收到一个 chunk 调用 onChunk 回调
  */
 export async function callQwenAPIStream(
   messages: ChatMessage[],
@@ -120,13 +144,14 @@ export async function callQwenAPIStream(
   signal?: AbortSignal,
   maxTokens?: number
 ): Promise<string> {
-  const { apiKey, apiUrl, model, temperature, topP } = getApiConfig();
-  const streamTimeout = Number(process.env.QWEN_STREAM_TIMEOUT_MS) || STREAM_TIMEOUT_MS;
+  const { apiKey, apiUrl, model, temperature, topP, provider } = getApiConfig();
+  const streamTimeout = Number(process.env.DEEPSEEK_STREAM_TIMEOUT_MS)
+    || Number(process.env.QWEN_STREAM_TIMEOUT_MS)
+    || STREAM_TIMEOUT_MS;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), streamTimeout);
 
-  // If caller provides a signal (e.g. client disconnect), abort too
   if (signal) {
     signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
@@ -151,11 +176,11 @@ export async function callQwenAPIStream(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Qwen API 返回错误 (${response.status}): ${errorText}`);
+      throw new Error(`${provider} API 返回错误 (${response.status}): ${errorText}`);
     }
 
     if (!response.body) {
-      throw new Error('Qwen API 响应体为空');
+      throw new Error(`${provider} API 响应体为空`);
     }
 
     const reader = response.body.getReader();
@@ -196,7 +221,7 @@ export async function callQwenAPIStream(
   } catch (err: any) {
     clearTimeout(timer);
     if (err.name === 'AbortError') {
-      throw new Error('Qwen API 请求超时，请稍后重试');
+      throw new Error(`${provider} API 请求超时，请稍后重试`);
     }
     throw err;
   }
