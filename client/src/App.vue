@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import type { Character, ChatMessage, User } from './api'
 import { getCharacters, createCharacter, deleteCharacter, getMessages } from './api'
 import { getCurrentUser, saveUser, clearUser, getActiveCharacterId, saveActiveCharacterId, clearActiveCharacterId } from './userSession'
+import { getTheme, setTheme, type Theme } from './theme'
 import LoginPage from './components/LoginPage.vue'
 import CharacterSetup from './components/CharacterSetup.vue'
 import ChatWindow from './components/ChatWindow.vue'
@@ -16,7 +17,20 @@ const loading = ref(false)
 const appError = ref('')
 const creatingCharacter = ref(false)
 const deletingCharacterId = ref<number | null>(null)
+const currentTheme = ref<Theme>(getTheme())
 let activeCharacterRequestId = 0
+
+function cycleTheme() {
+  const themes: Theme[] = ['wechat', 'imessage', 'dark']
+  const next = themes[(themes.indexOf(currentTheme.value) + 1) % themes.length]
+  currentTheme.value = next
+  setTheme(next)
+}
+
+const themeLabel = computed(() => {
+  const map: Record<Theme, string> = { wechat: '💬', imessage: '💙', dark: '🌙' }
+  return map[currentTheme.value]
+})
 
 onMounted(() => {
   const saved = getCurrentUser()
@@ -223,6 +237,7 @@ function getRelationLabel(mode: string | undefined): string {
           </div>
         </div>
         <div class="header-right">
+          <button class="btn-theme" @click="cycleTheme" title="切换主题">{{ themeLabel }}</button>
           <span class="user-badge">{{ user.username }}</span>
           <button class="btn-logout" @click="onLogout">退出</button>
         </div>
@@ -302,7 +317,7 @@ function getRelationLabel(mode: string | undefined): string {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #f0f2f5;
+  background: var(--app-bg, #f0f2f5);
 }
 
 .app-header {
@@ -310,8 +325,8 @@ function getRelationLabel(mode: string | undefined): string {
   align-items: center;
   justify-content: center;
   padding: 14px 20px;
-  background: #1e1b4b;
-  color: #fff;
+  background: var(--header-bg, #1e1b4b);
+  color: var(--header-text, #fff);
   flex-shrink: 0;
   gap: 10px;
 }
@@ -384,6 +399,20 @@ function getRelationLabel(mode: string | undefined): string {
   color: rgba(255, 255, 255, 0.8);
 }
 
+.btn-theme {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: var(--header-text, #fff);
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+.btn-theme:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 .btn-logout {
   background: rgba(255, 100, 100, 0.15);
   border: 1px solid rgba(255, 100, 100, 0.3);
@@ -421,7 +450,7 @@ function getRelationLabel(mode: string | undefined): string {
   flex: 1;
   padding: 24px;
   overflow-y: auto;
-  background: #f0f2f5;
+  background: var(--app-bg, #f0f2f5);
 }
 
 .char-list-header {
@@ -442,7 +471,7 @@ function getRelationLabel(mode: string | undefined): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: #07c160;
+  background: var(--accent, #07c160);
   color: #fff;
   border: none;
   padding: 8px 14px;
@@ -455,7 +484,7 @@ function getRelationLabel(mode: string | undefined): string {
 }
 
 .btn-create:hover {
-  background: #06ad56;
+  background: var(--accent-hover, #06ad56);
 }
 
 .char-loading, .char-empty {
@@ -483,7 +512,7 @@ function getRelationLabel(mode: string | undefined): string {
 .btn-create-center {
   margin-top: 20px;
   padding: 10px 24px;
-  background: #07c160;
+  background: var(--accent, #07c160);
   color: #fff;
   border: none;
   border-radius: 10px;
@@ -508,8 +537,8 @@ function getRelationLabel(mode: string | undefined): string {
   display: flex;
   align-items: center;
   gap: 14px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--card-border, #e5e7eb);
   border-radius: 14px;
   padding: 16px;
   cursor: pointer;
@@ -517,7 +546,7 @@ function getRelationLabel(mode: string | undefined): string {
 }
 
 .char-card:hover {
-  border-color: #95ec69;
+  border-color: var(--accent, #95ec69);
   box-shadow: 0 4px 16px rgba(7, 193, 96, 0.1);
   transform: translateY(-1px);
 }
@@ -543,7 +572,7 @@ function getRelationLabel(mode: string | undefined): string {
 .card-name {
   font-weight: 600;
   font-size: 0.95rem;
-  color: #111827;
+  color: var(--text-primary, #111827);
 }
 
 .card-tags {
@@ -557,8 +586,8 @@ function getRelationLabel(mode: string | undefined): string {
   font-size: 0.72rem;
   padding: 2px 8px;
   border-radius: 999px;
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--app-bg, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
 }
 
 .card-tag-personality {

@@ -807,3 +807,120 @@ export async function sendMessageStream(
   console.log(`[sendMessageStream] 流结束: characterId=${character.id}, receivedReady=${receivedReady}, receivedFirstDelta=${receivedFirstDelta}, receivedDone=${receivedDone}`);
   return recoveredReplies;
 }
+
+// ====== 日记 ======
+
+export interface DiaryEntry {
+  entry_date: string;
+  content: string;
+}
+
+export async function getDiaryEntries(characterId: number, userId: number): Promise<DiaryEntry[]> {
+  try {
+    const res = await fetchApi(`/api/data/diary/${characterId}?userId=${userId}`, undefined, '获取日记失败');
+    if (!res.ok) return [];
+    const data = await readJsonApiResponse<{ entries?: DiaryEntry[] }>(
+      res, '获取日记失败', getApiProxyHint('获取日记失败')
+    );
+    return data?.entries || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getDiaryForDate(characterId: number, userId: number, dateStr: string): Promise<string> {
+  try {
+    const res = await fetchApi(`/api/data/diary/${characterId}/${dateStr}?userId=${userId}`, undefined, '获取日记失败');
+    if (!res.ok) return '';
+    const data = await readJsonApiResponse<{ content?: string }>(
+      res, '获取日记失败', getApiProxyHint('获取日记失败')
+    );
+    return data?.content || '';
+  } catch {
+    return '';
+  }
+}
+
+// ====== 提醒 ======
+
+export interface ReminderItem {
+  id: number;
+  title: string;
+  remind_at: string;
+  description: string | null;
+}
+
+export async function getReminders(characterId: number, userId: number): Promise<ReminderItem[]> {
+  try {
+    const res = await fetchApi(`/api/data/reminders/${characterId}?userId=${userId}`, undefined, '获取提醒失败');
+    if (!res.ok) return [];
+    const data = await readJsonApiResponse<{ reminders?: ReminderItem[] }>(
+      res, '获取提醒失败', getApiProxyHint('获取提醒失败')
+    );
+    return data?.reminders || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteReminder(reminderId: number, userId: number): Promise<void> {
+  const res = await fetchApi(
+    `/api/data/reminders/${reminderId}?userId=${userId}`,
+    { method: 'DELETE' },
+    '删除提醒失败'
+  );
+  const data = await readJsonApiResponse<{ error?: string }>(
+    res, '删除提醒失败', getApiProxyHint('删除提醒失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '删除提醒失败');
+}
+
+// ====== 搜索 ======
+
+export interface SearchResult {
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+export async function searchMessages(characterId: number, userId: number, query: string): Promise<SearchResult[]> {
+  try {
+    const res = await fetchApi(
+      `/api/data/search/${characterId}?userId=${userId}&q=${encodeURIComponent(query)}`,
+      undefined,
+      '搜索失败'
+    );
+    if (!res.ok) return [];
+    const data = await readJsonApiResponse<{ results?: SearchResult[] }>(
+      res, '搜索失败', getApiProxyHint('搜索失败')
+    );
+    return data?.results || [];
+  } catch {
+    return [];
+  }
+}
+
+// ====== 统计 ======
+
+export interface ChatStats {
+  totalMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  todayMessages: number;
+  avgReplyLength: number;
+  weeklyActivity: Array<{ day: string; count: number }>;
+  topWords: Array<{ word: string; count: number }>;
+  firstChatDate: string | null;
+}
+
+export async function getChatStats(characterId: number, userId: number): Promise<ChatStats | null> {
+  try {
+    const res = await fetchApi(`/api/data/stats/${characterId}?userId=${userId}`, undefined, '获取统计失败');
+    if (!res.ok) return null;
+    return await readJsonApiResponse<ChatStats>(
+      res, '获取统计失败', getApiProxyHint('获取统计失败')
+    );
+  } catch {
+    return null;
+  }
+}

@@ -142,6 +142,27 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (character_id) REFERENCES characters(id)
   );
+
+  CREATE TABLE IF NOT EXISTS diary_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id INTEGER NOT NULL,
+    entry_date TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(character_id, entry_date),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    remind_at TEXT NOT NULL,
+    description TEXT,
+    is_triggered INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (character_id) REFERENCES characters(id)
+  );
 `);
 
 // ========== 兼容性迁移 ==========

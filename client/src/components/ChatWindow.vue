@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Character, ChatMessage, EmotionInfo, RelationshipInfo } from '../api'
-import { checkInitiativeEligibility, clearMessages, generateInitiativeMessage, getEmotion, getRelationship, saveMessage, sendMessage, sendMessageStream, StreamChatError } from '../api'
+import { checkInitiativeEligibility, clearMessages, generateInitiativeMessage, getEmotion, getRelationship, saveMessage, searchMessages, sendMessage, sendMessageStream, StreamChatError } from '../api'
+import type { SearchResult } from '../api'
 import { clearChatDraft, getChatDraft, saveChatDraft } from '../userSession'
 import MemoryPanel from './MemoryPanel.vue'
 
@@ -27,6 +28,10 @@ const showMobilePanel = ref(false)
 const showMemoryPanel = ref(false)
 const initiativeLoading = ref(false)
 const sessionInitiativeCount = ref(0)
+const showSearch = ref(false)
+const searchQuery = ref('')
+const searchResults = ref<SearchResult[]>([])
+const searching = ref(false)
 let statusRequestId = 0
 let initiativeTimer: ReturnType<typeof setTimeout> | null = null
 let initiativePollInterval: ReturnType<typeof setInterval> | null = null
@@ -350,6 +355,28 @@ onMounted(() => {
 onUnmounted(() => {
   clearInitiativeTimers()
 })
+
+// ====== 搜索 ======
+
+async function doSearch() {
+  const q = searchQuery.value.trim()
+  if (!q || !props.character.id) return
+  searching.value = true
+  try {
+    searchResults.value = await searchMessages(props.character.id, props.userId, q)
+  } catch (e: any) {
+    console.error('[Search] 失败:', e)
+  } finally {
+    searching.value = false
+  }
+}
+
+function highlightText(text: string, query: string): string {
+  if (!query) return text
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  return text.replace(regex, '<mark>$1</mark>')
+}
 </script>
 
 <template>
@@ -441,6 +468,7 @@ onUnmounted(() => {
           <span class="header-status">{{ moodEmoji }} {{ moodLabel }} · {{ phaseLabel }}</span>
         </div>
         <div class="header-actions">
+          <button class="tool-button" @click="showSearch = true">搜索</button>
           <button class="tool-button" @click="showMemoryPanel = true">记忆</button>
           <button
             v-if="messages.length > 0"
@@ -506,6 +534,33 @@ onUnmounted(() => {
       </footer>
     </section>
 
+    <!-- Search Overlay -->
+    <Transition name="fade">
+      <div v-if="showSearch" class="search-overlay" @click="showSearch = false">
+        <div class="search-panel" @click.stop>
+          <div class="search-header">
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="搜索聊天记录..."
+              class="search-input"
+              @keyup.enter="doSearch"
+            />
+            <button class="btn-search" @click="doSearch" :disabled="searching">{{ searching ? '...' : '搜索' }}</button>
+            <button class="btn-close-search" @click="showSearch = false">✕</button>
+          </div>
+          <div class="search-results">
+            <div v-if="searchResults.length === 0 && searchQuery && !searching" class="search-empty">没有结果</div>
+            <div v-for="(result, i) in searchResults" :key="i" class="search-result-item">
+              <span class="search-result-role">{{ result.role === 'user' ? '你' : character.name }}</span>
+              <span class="search-result-text" v-html="highlightText(result.content, searchQuery)"></span>
+              <span class="search-result-time">{{ new Date(result.created_at).toLocaleDateString() }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- Memory Panel Overlay -->
     <Transition name="fade">
       <div v-if="showMemoryPanel" class="memory-overlay" @click="showMemoryPanel = false">
@@ -532,7 +587,7 @@ onUnmounted(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
-  background: #f0f2f5;
+  background: var(--chat-bg, #f0f2f5);
   overflow: hidden;
 }
 
@@ -540,8 +595,8 @@ onUnmounted(() => {
 .companion-panel {
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-right: 1px solid #e5e7eb;
+  background: var(--panel-bg, #fff);
+  border-right: 1px solid var(--border-color, #e5e7eb);
   overflow-y: auto;
 }
 
@@ -713,7 +768,7 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #f0f2f5;
+  background: var(--chat-bg, #f0f2f5);
 }
 
 .conversation-header {
@@ -722,8 +777,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--panel-bg, #fff);
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
   flex-shrink: 0;
 }
 
@@ -736,7 +791,7 @@ onUnmounted(() => {
 .header-name {
   font-weight: 700;
   font-size: 0.95rem;
-  color: #111827;
+  color: var(--text-primary, #111827);
 }
 
 .header-status {
@@ -764,10 +819,10 @@ onUnmounted(() => {
 .tool-button {
   height: 32px;
   padding: 0 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color, #e5e7eb);
   border-radius: 8px;
-  background: #fff;
-  color: #6b7280;
+  background: var(--panel-bg, #fff);
+  color: var(--text-secondary, #6b7280);
   cursor: pointer;
   font-size: 0.8rem;
   transition: all 0.15s;
@@ -818,7 +873,7 @@ onUnmounted(() => {
 }
 
 .empty-title {
-  color: #111827;
+  color: var(--text-primary, #111827);
   font-weight: 700;
   font-size: 1.05rem;
   margin-bottom: 6px;
@@ -904,14 +959,14 @@ onUnmounted(() => {
 }
 
 .msg-user .msg-bubble {
-  background: #95ec69;
-  color: #000;
+  background: var(--user-bubble, #95ec69);
+  color: var(--text-primary, #000);
   border-bottom-right-radius: 4px;
 }
 
 .msg-bot .msg-bubble {
-  background: #fff;
-  color: #111827;
+  background: var(--bot-bubble, #fff);
+  color: var(--text-primary, #111827);
   border-bottom-left-radius: 4px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
@@ -973,8 +1028,8 @@ onUnmounted(() => {
   align-items: flex-end;
   gap: 10px;
   padding: 12px 16px 14px;
-  background: #f7f8fa;
-  border-top: 1px solid #e5e7eb;
+  background: var(--panel-bg, #f7f8fa);
+  border-top: 1px solid var(--border-color, #e5e7eb);
   flex-shrink: 0;
 }
 
@@ -983,15 +1038,15 @@ onUnmounted(() => {
   min-height: 40px;
   max-height: 100px;
   padding: 10px 14px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color, #e5e7eb);
   border-radius: 20px;
   resize: none;
-  color: #111827;
+  color: var(--text-primary, #111827);
   font-size: 0.92rem;
   line-height: 1.45;
   font-family: inherit;
   box-sizing: border-box;
-  background: #fff;
+  background: var(--input-bg, #fff);
   transition: border-color 0.15s;
 }
 
@@ -1006,7 +1061,7 @@ onUnmounted(() => {
   height: 40px;
   border: none;
   border-radius: 20px;
-  background: #07c160;
+  background: var(--accent, #07c160);
   color: #fff;
   display: grid;
   place-items: center;
@@ -1016,7 +1071,7 @@ onUnmounted(() => {
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #06ad56;
+  background: var(--accent-hover, #06ad56);
 }
 
 .btn-send:disabled {
@@ -1037,7 +1092,7 @@ onUnmounted(() => {
 }
 
 .mobile-panel {
-  background: #fff;
+  background: var(--panel-bg, #fff);
   border-radius: 20px 20px 0 0;
   padding: 24px 20px 32px;
   width: 100%;
@@ -1229,7 +1284,7 @@ onUnmounted(() => {
 }
 
 .memory-panel-modal {
-  background: #fff;
+  background: var(--panel-bg, #fff);
   border-radius: 20px;
   width: 100%;
   max-width: 520px;
@@ -1304,5 +1359,133 @@ onUnmounted(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* ====== Search Overlay ====== */
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+}
+
+.search-panel {
+  background: var(--panel-bg, #fff);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.search-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f2f5;
+  flex-shrink: 0;
+}
+
+.search-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: #95ec69;
+}
+
+.btn-search {
+  padding: 8px 14px;
+  background: #07c160;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btn-search:disabled {
+  opacity: 0.5;
+}
+
+.btn-close-search {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.search-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.search-empty {
+  text-align: center;
+  padding: 30px;
+  color: #9ca3af;
+  font-size: 0.88rem;
+}
+
+.search-result-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.search-result-item:hover {
+  background: #f9fafb;
+}
+
+.search-result-role {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #9ca3af;
+  flex-shrink: 0;
+  width: 36px;
+  padding-top: 2px;
+}
+
+.search-result-text {
+  flex: 1;
+  font-size: 0.85rem;
+  color: #374151;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.search-result-text :deep(mark) {
+  background: #fef08a;
+  color: #854d0e;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.search-result-time {
+  font-size: 0.72rem;
+  color: #d1d5db;
+  flex-shrink: 0;
 }
 </style>

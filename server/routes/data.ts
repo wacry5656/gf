@@ -7,6 +7,8 @@ import { checkInitiativeEligibility, generateInitiativeMessage } from '../servic
 import { getMemoryCount, getAllMemoryTexts, searchMemory, getCoreMemories } from '../services/memory';
 import { getSummary } from '../services/summary';
 import { getPersonalityTraits, getUserIdFromCharacter } from '../services/personality';
+import { getDiaryEntries, getDiaryForDate, generateDiaryForDate } from '../services/diary';
+import { getPendingReminders, getTodayDueReminders, deleteReminder } from '../services/reminder';
 
 export const dataRouter = Router();
 
@@ -480,5 +482,193 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Get personality error:', err?.message);
     res.status(500).json({ error: '获取人格特征失败' });
+  }
+});
+
+// ====== 日记 ======
+
+ dataRouter.get('/diary/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const entries = getDiaryEntries(characterId, 30);
+    res.json({ entries });
+  } catch (err: any) {
+    console.error('Get diary error:', err?.message);
+    res.status(500).json({ error: '获取日记失败' });
+  }
+});
+
+ dataRouter.get('/diary/:characterId/:date', async (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const dateStr = String(req.params.date);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    let content = getDiaryForDate(characterId, dateStr);
+    if (!content) {
+      content = await generateDiaryForDate(characterId, dateStr);
+    }
+
+    res.json({ date: dateStr, content: content || '' });
+  } catch (err: any) {
+    console.error('Get diary date error:', err?.message);
+    res.status(500).json({ error: '获取日记失败' });
+  }
+});
+
+// ====== 提醒 ======
+
+ dataRouter.get('/reminders/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const reminders = getPendingReminders(characterId);
+    res.json({ reminders });
+  } catch (err: any) {
+    console.error('Get reminders error:', err?.message);
+    res.status(500).json({ error: '获取提醒失败' });
+  }
+});
+
+ dataRouter.delete('/reminders/:reminderId', (req: Request, res: Response) => {
+  try {
+    const reminderId = Number(req.params.reminderId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const reminder = db.prepare('SELECT character_id FROM reminders WHERE id = ?').get(reminderId) as
+      | { character_id: number }
+      | undefined;
+    if (!reminder) {
+      res.status(404).json({ error: '提醒不存在' });
+      return;
+    }
+
+    const { ok } = ensureCharacterOwnership(reminder.character_id, userId, res);
+    if (!ok) return;
+
+    deleteReminder(reminderId);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Delete reminder error:', err?.message);
+    res.status(500).json({ error: '删除提醒失败' });
+  }
+});
+
+// ====== 聊天记录搜索 ======
+
+ dataRouter.get('/search/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+    const q = (req.query.q as string || '').trim();
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    if (!q || q.length < 1) {
+      res.json({ results: [] });
+      return;
+    }
+
+    const results = db.prepare(
+      `SELECT role, content, created_at
+       FROM chat_messages
+       WHERE character_id = ? AND content LIKE '%' || ? || '%'
+       ORDER BY id DESC
+       LIMIT 50`
+    ).all(characterId, q) as Array<{ role: string; content: string; created_at: string }>;
+
+    res.json({ results: results.reverse() });
+  } catch (err: any) {
+    console.error('Search error:', err?.message);
+    res.status(500).json({ error: '搜索失败' });
+  }
+});
+
+// ====== 聊天统计 ======
+
+ dataRouter.get('/stats/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    // 总消息数
+    const totalRow = db.prepare(
+      "SELECT COUNT(*) as total, SUM(CASE WHEN role='user' THEN 1 ELSE 0 END) as user_count, SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END) as assistant_count FROM chat_messages WHERE character_id = ?"
+    ).get(characterId) as { total: number; user_count: number; assistant_count: number };
+
+    // 今日消息数
+    const todayRow = db.prepare(
+      "SELECT COUNT(*) as today FROM chat_messages WHERE character_id = ? AND date(created_at) = date('now')"
+    ).get(characterId) as { today: number };
+
+    // 平均消息长度
+    const avgLenRow = db.prepare(
+      "SELECT AVG(LENGTH(content)) as avg_len FROM chat_messages WHERE character_id = ? AND role = 'assistant'"
+    ).get(characterId) as { avg_len: number };
+
+    // 最近7天消息数
+    const weeklyRows = db.prepare(
+      `SELECT date(created_at) as day, COUNT(*) as count
+       FROM chat_messages
+       WHERE character_id = ? AND created_at >= datetime('now', '-7 days')
+       GROUP BY date(created_at)
+       ORDER BY day ASC`
+    ).all(characterId) as Array<{ day: string; count: number }>;
+
+    // 最常出现的词（简单分词，只取2字以上中文词）
+    const allContent = db.prepare(
+      "SELECT content FROM chat_messages WHERE character_id = ? AND role = 'user'"
+    ).all(characterId) as Array<{ content: string }>;
+
+    const wordCount = new Map<string, number>();
+    for (const row of allContent) {
+      const matches = row.content.match(/[\u4e00-\u9fff]{2,8}/g);
+      if (matches) {
+        for (const word of matches) {
+          if (word.length >= 2 && !/^(这个|那个|就是|然后|但是|因为|所以|如果|还是|可以|没有|不是|什么|怎么|觉得|感觉|今天|昨天|最近|一下|一点|真的|有点|比较|还是|时候|我们|你们|他们|自己|知道|认为|觉得|一下)$/.test(word)) {
+            wordCount.set(word, (wordCount.get(word) || 0) + 1);
+          }
+        }
+      }
+    }
+    const topWords = Array.from(wordCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([word, count]) => ({ word, count }));
+
+    // 第一条消息时间
+    const firstRow = db.prepare(
+      'SELECT created_at FROM chat_messages WHERE character_id = ? ORDER BY id ASC LIMIT 1'
+    ).get(characterId) as { created_at: string } | undefined;
+
+    res.json({
+      totalMessages: totalRow.total || 0,
+      userMessages: totalRow.user_count || 0,
+      assistantMessages: totalRow.assistant_count || 0,
+      todayMessages: todayRow.today || 0,
+      avgReplyLength: Math.round(avgLenRow.avg_len || 0),
+      weeklyActivity: weeklyRows,
+      topWords,
+      firstChatDate: firstRow?.created_at || null,
+    });
+  } catch (err: any) {
+    console.error('Get stats error:', err?.message);
+    res.status(500).json({ error: '获取统计失败' });
   }
 });
