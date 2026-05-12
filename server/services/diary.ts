@@ -7,6 +7,7 @@
 
 import db from '../db';
 import { callQwenAPI } from './qwen';
+import { addLocalDays, formatLocalDate } from '../utils/dateTime';
 
 interface ChatRow {
   role: string;
@@ -91,7 +92,7 @@ export function getDiaryForDate(characterId: number, dateStr: string): string | 
  * 检查昨天是否有日记，没有则异步生成
  */
 export function maybeGenerateYesterdayDiary(characterId: number): void {
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yesterday = formatLocalDate(addLocalDays(new Date(), -1));
   const exists = db.prepare(
     'SELECT 1 FROM diary_entries WHERE character_id = ? AND entry_date = ?'
   ).get(characterId, yesterday);

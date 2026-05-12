@@ -35,6 +35,8 @@ const searching = ref(false)
 let statusRequestId = 0
 let initiativeTimer: ReturnType<typeof setTimeout> | null = null
 let initiativePollInterval: ReturnType<typeof setInterval> | null = null
+let longAbsenceCheckedForCharacterId: number | null = null
+let initiativePrimedForCharacterId: number | null = null
 
 function displayPersonality(raw: string): string {
   const publicText = (raw || '')
@@ -131,6 +133,10 @@ async function fetchStatus() {
 
 async function checkAndShowLongAbsence() {
   if (!props.character?.id || !props.userId) return
+  if (longAbsenceCheckedForCharacterId === props.character.id) return
+
+  longAbsenceCheckedForCharacterId = props.character.id
+
   try {
     const result = await checkLongAbsence(props.character.id, props.userId)
     if (result.absent && result.greeting.length > 0) {
@@ -141,7 +147,7 @@ async function checkAndShowLongAbsence() {
       emit('update:messages', updated)
     }
   } catch {
-    // silent
+    longAbsenceCheckedForCharacterId = null
   }
 }
 
@@ -149,6 +155,16 @@ onMounted(fetchStatus)
 
 watch(() => props.character?.id, fetchStatus)
 watch(() => props.userId, fetchStatus)
+
+watch(
+  () => props.character?.id,
+  () => {
+    longAbsenceCheckedForCharacterId = null
+    initiativePrimedForCharacterId = null
+    sessionInitiativeCount.value = 0
+  },
+  { immediate: true },
+)
 
 watch(
   () => [props.userId, props.character?.id] as const,
@@ -328,9 +344,6 @@ function clearInitiativeTimers() {
 function startInitiativePolling() {
   clearInitiativeTimers()
 
-  // 立即检查一次
-  checkAndSendInitiative()
-
   // 每 30 秒检查一次
   initiativePollInterval = setInterval(() => {
     checkAndSendInitiative()
@@ -342,15 +355,12 @@ async function checkAndSendInitiative() {
   if (loading.value || initiativeLoading.value) return
   if (props.messages.length === 0) return
 
-  // 最后一条必须是用户发的
-  const lastMsg = props.messages[props.messages.length - 1]
-  if (lastMsg.role !== 'user') return
+  initiativeLoading.value = true
 
   try {
     // 先尝试随机事件（15%概率触发）
     const randomResult = await triggerRandomEvent(props.character.id, props.userId)
     if (randomResult.triggered && randomResult.replies.length > 0) {
-      initiativeLoading.value = true
       const finalMessages = [...props.messages]
       for (const reply of randomResult.replies) {
         finalMessages.push({ role: 'assistant', content: reply })
@@ -367,8 +377,6 @@ async function checkAndSendInitiative() {
     )
 
     if (!eligibility.eligible) return
-
-    initiativeLoading.value = true
 
     // 显示 typing
     const typingMsg: ChatMessage = { role: 'assistant', content: '\u200B' }
@@ -406,8 +414,23 @@ async function checkAndSendInitiative() {
 
 onMounted(() => {
   startInitiativePolling()
-  checkAndShowLongAbsence()
 })
+
+watch(
+  () => [props.character?.id, props.messages.length] as const,
+  ([characterId, messageCount], previous) => {
+    if (!characterId || messageCount === 0) return
+
+    checkAndShowLongAbsence()
+
+    const [previousCharacterId, previousMessageCount] = previous ?? [null, 0]
+    if (initiativePrimedForCharacterId !== characterId && (previousCharacterId !== characterId || previousMessageCount === 0)) {
+      initiativePrimedForCharacterId = characterId
+      checkAndSendInitiative()
+    }
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
   clearInitiativeTimers()

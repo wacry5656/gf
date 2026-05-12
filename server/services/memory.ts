@@ -20,6 +20,7 @@ import { detectMemoryConflict, resolveMemoryConflict } from './memoryConflict';
 import type { MemoryType } from './memoryConflict';
 import type { RelationshipSubtype } from './factExtractor';
 import type { MemoryDebugEntry } from '../utils/memoryDebug';
+import { addLocalDays, formatLocalDateTime } from '../utils/dateTime';
 
 // ========== 记忆重要性评估 ==========
 
@@ -204,9 +205,9 @@ async function addSingleMemory(
     // ---- 计算过期时间（state / plan 支持 TTL）----
     let expiresAt: string | null = null;
     if (memoryType === 'state') {
-      expiresAt = new Date(Date.now() + memoryConfig.stateTtlDays * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+      expiresAt = formatLocalDateTime(addLocalDays(new Date(), memoryConfig.stateTtlDays));
     } else if (memoryType === 'plan') {
-      expiresAt = new Date(Date.now() + memoryConfig.planTtlDays * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+      expiresAt = formatLocalDateTime(addLocalDays(new Date(), memoryConfig.planTtlDays));
     }
 
     const result = db.prepare(

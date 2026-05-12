@@ -5,6 +5,7 @@
  */
 
 import db from '../db';
+import { addLocalDays, formatLocalDate, startOfLocalDay } from '../utils/dateTime';
 
 interface ReminderRow {
   id: number;
@@ -17,9 +18,9 @@ interface DayPattern { pattern: RegExp; days: number }
 
 // 日期提取正则
 const RELATIVE_DAY_PATTERNS: DayPattern[] = [
-  { pattern: /明天/g, days: 1 },
-  { pattern: /后天/g, days: 2 },
-  { pattern: /大后天/g, days: 3 },
+  { pattern: /大后天/, days: 3 },
+  { pattern: /后天/, days: 2 },
+  { pattern: /明天/, days: 1 },
 ];
 
 const WEEKDAY_MAP: Record<string, number> = {
@@ -27,8 +28,8 @@ const WEEKDAY_MAP: Record<string, number> = {
 };
 
 function getFutureDate(days: number): string {
-  const d = new Date(Date.now() + days * 86400000);
-  return d.toISOString().slice(0, 10);
+  const d = addLocalDays(new Date(), days);
+  return formatLocalDate(d);
 }
 
 function getNextWeekday(targetWeekday: number): string {
@@ -51,12 +52,20 @@ function cleanEventText(text: string): string {
   return text.replace(/[，。！？,.!?]/g, '').trim();
 }
 
+function hasEventPayload(text: string): boolean {
+  const stripped = text
+    .replace(/大后天|后天|明天|下周[一二三四五六日]|这个?周末|(\d{1,2})月(\d{1,2})[日号]/g, '')
+    .replace(/[，。！？,.!?\s]/g, '')
+    .trim();
+  return stripped.length >= 2;
+}
+
 /**
  * 从用户消息中提取可能的日期事件
  */
 export function extractDateEvent(text: string): { title: string; remindAt: string } | null {
   const trimmed = text.trim();
-  if (trimmed.length < 5) return null;
+  if (!hasEventPayload(trimmed)) return null;
 
   // 匹配 "明天/后天/大后天 + 事件"
   for (const item of RELATIVE_DAY_PATTERNS) {
@@ -84,13 +93,13 @@ export function extractDateEvent(text: string): { title: string; remindAt: strin
   if (absMatch) {
     const month = Number(absMatch[1]);
     const day = Number(absMatch[2]);
-    const now = new Date();
-    let year = now.getFullYear();
+    const today = startOfLocalDay(new Date());
+    let year = today.getFullYear();
     const remindDate = new Date(year, month - 1, day);
-    if (remindDate < now) {
+    if (remindDate < today) {
       remindDate.setFullYear(year + 1);
     }
-    return { title: cleanEventText(trimmed), remindAt: remindDate.toISOString().slice(0, 10) };
+    return { title: cleanEventText(trimmed), remindAt: formatLocalDate(remindDate) };
   }
 
   return null;
@@ -105,9 +114,26 @@ export function addReminder(
   remindAt: string,
   description?: string
 ): void {
+  const normalizedTitle = title.trim();
+  const normalizedDate = remindAt.trim();
+  const normalizedDescription = description?.trim() || null;
+
+  const existing = db.prepare(
+    `SELECT id, description FROM reminders
+     WHERE character_id = ? AND title = ? AND remind_at = ? AND is_triggered = 0
+     ORDER BY id DESC LIMIT 1`
+  ).get(characterId, normalizedTitle, normalizedDate) as { id: number; description: string | null } | undefined;
+
+  if (existing) {
+    if (normalizedDescription && existing.description !== normalizedDescription) {
+      db.prepare('UPDATE reminders SET description = ? WHERE id = ?').run(normalizedDescription, existing.id);
+    }
+    return;
+  }
+
   db.prepare(
     'INSERT INTO reminders (character_id, title, remind_at, description) VALUES (?, ?, ?, ?)'
-  ).run(characterId, title, remindAt, description || null);
+  ).run(characterId, normalizedTitle, normalizedDate, normalizedDescription);
 }
 
 /**
@@ -125,7 +151,7 @@ export function getPendingReminders(characterId: number): ReminderRow[] {
  * 检查今天到期的提醒
  */
 export function getTodayDueReminders(characterId: number): ReminderRow[] {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatLocalDate(new Date());
   return db.prepare(
     `SELECT id, title, remind_at, description FROM reminders
      WHERE character_id = ? AND is_triggered = 0 AND date(remind_at) <= ?

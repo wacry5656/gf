@@ -3,7 +3,7 @@ import db from '../db';
 import { readEmotionState, type Mood } from '../services/emotion';
 import { readRelationshipState, type RelationshipPhase } from '../services/relationship';
 import { ensureCharacterOwnership } from '../utils/ownership';
-import { checkInitiativeEligibility, generateInitiativeMessage, checkLongAbsence, generateLongAbsenceGreeting, shouldTriggerRandomEvent, generateRandomEvent } from '../services/initiative';
+import { checkInitiativeEligibility, generateInitiativeMessage, checkLongAbsence, generateLongAbsenceGreeting, shouldTriggerRandomEvent, generateRandomEvent, triggerDueReminders, shouldSendLongAbsenceGreeting } from '../services/initiative';
 import { getMemoryCount, getAllMemoryTexts, searchMemory, getCoreMemories } from '../services/memory';
 import { getSummary } from '../services/summary';
 import { getPersonalityTraits, getUserIdFromCharacter } from '../services/personality';
@@ -455,6 +455,12 @@ dataRouter.post('/random-event/:characterId', async (req: Request, res: Response
     const { ok } = ensureCharacterOwnership(characterId, userId, res);
     if (!ok) return;
 
+    const dueReminderReplies = triggerDueReminders(characterId);
+    if (dueReminderReplies.length > 0) {
+      res.json({ triggered: true, replies: dueReminderReplies });
+      return;
+    }
+
     if (!shouldTriggerRandomEvent(characterId)) {
       res.json({ triggered: false, replies: [] });
       return;
@@ -483,7 +489,7 @@ dataRouter.get('/long-absence/:characterId', async (req: Request, res: Response)
     if (!ok) return;
 
     const { absent, daysSince } = checkLongAbsence(characterId);
-    if (!absent) {
+    if (!absent || !shouldSendLongAbsenceGreeting(characterId)) {
       res.json({ absent: false, greeting: [] });
       return;
     }

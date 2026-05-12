@@ -19,6 +19,7 @@ import { trimToTokenBudget, fitRecentMessagesToBudget } from '../utils/tokenBudg
 import { getSummary } from './summary';
 import { getPersonalityTraits, getUserIdFromCharacter } from './personality';
 import { searchMemory, getCoreMemories, recordMemoryHits } from './memory';
+import { getTodayDueReminders, markReminderTriggered } from './reminder';
 import type { MemoryResult } from './memory';
 
 interface ChatMessage {
@@ -94,17 +95,13 @@ export function checkInitiativeEligibility(
     }
   }
 
-  // 4. 检查用户是否 idle 足够时间（最后一条是用户发的，且超过 2 分钟）
+  // 4. 检查用户是否 idle 足够时间（按最后一条用户消息计算）
   const lastMessage = db.prepare(
-    "SELECT role, content, created_at FROM chat_messages WHERE character_id = ? ORDER BY id DESC LIMIT 1"
-  ).get(characterId) as { role: string; content: string; created_at: string } | undefined;
+    "SELECT created_at FROM chat_messages WHERE character_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
+  ).get(characterId) as { created_at: string } | undefined;
 
   if (!lastMessage) {
-    return { eligible: false, reason: '没有聊天记录' };
-  }
-
-  if (lastMessage.role !== 'user') {
-    return { eligible: false, reason: '最后一条不是用户消息' };
+    return { eligible: false, reason: '没有用户发言记录' };
   }
 
   const idleMinutes = (Date.now() - new Date(lastMessage.created_at).getTime()) / 60000;
@@ -117,7 +114,7 @@ export function checkInitiativeEligibility(
 
 export function checkLongAbsence(characterId: number): { absent: boolean; daysSince: number } {
   const lastMsg = db.prepare(
-    "SELECT created_at FROM chat_messages WHERE character_id = ? ORDER BY id DESC LIMIT 1"
+    "SELECT created_at FROM chat_messages WHERE character_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
   ).get(characterId) as { created_at: string } | undefined;
 
   if (!lastMsg) return { absent: false, daysSince: 0 };
@@ -126,11 +123,63 @@ export function checkLongAbsence(characterId: number): { absent: boolean; daysSi
   return { absent: daysSince >= 3, daysSince };
 }
 
+export function shouldSendLongAbsenceGreeting(characterId: number): boolean {
+  const lastUserMessage = db.prepare(
+    "SELECT created_at FROM chat_messages WHERE character_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
+  ).get(characterId) as { created_at: string } | undefined;
+
+  if (!lastUserMessage) return false;
+
+  const existingGreeting = db.prepare(
+    "SELECT id FROM initiative_log WHERE character_id = ? AND trigger_reason = 'long_absence' AND created_at >= ? ORDER BY id DESC LIMIT 1"
+  ).get(characterId, lastUserMessage.created_at) as { id: number } | undefined;
+
+  return !existingGreeting;
+}
+
+function buildReminderAction(title: string): string {
+  const stripped = title
+    .replace(/大后天|后天|明天|今天|下周[一二三四五六日]|这个?周末|(\d{1,2})月(\d{1,2})[日号]/g, '')
+    .replace(/[，。！？,.!?]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return stripped || title.trim();
+}
+
+export function triggerDueReminders(characterId: number): string[] {
+  const dueReminders = getTodayDueReminders(characterId);
+  if (dueReminders.length === 0) return [];
+
+  const replies = dueReminders.map((reminder, index) => {
+    const action = buildReminderAction(reminder.title);
+    return index === 0
+      ? `提醒你一下，今天别忘了${action}`
+      : `还有，今天别忘了${action}`;
+  });
+
+  const persistAll = db.transaction(() => {
+    for (const reply of replies) {
+      db.prepare('INSERT INTO chat_messages (character_id, role, content) VALUES (?, ?, ?)')
+        .run(characterId, 'assistant', reply);
+    }
+    db.prepare('INSERT INTO initiative_log (character_id, trigger_reason, content) VALUES (?, ?, ?)')
+      .run(characterId, 'reminder_due', replies.join('\n'));
+    for (const reminder of dueReminders) {
+      markReminderTriggered(reminder.id);
+    }
+  });
+
+  persistAll();
+  return replies;
+}
+
 export async function generateLongAbsenceGreeting(
   character: Character,
   characterId: number,
   daysSince: number,
 ): Promise<string[]> {
+  if (!shouldSendLongAbsenceGreeting(characterId)) return [];
+
   const userId = getUserIdFromCharacter(characterId);
   const emotionState = userId ? getEmotionState(userId, characterId) : null;
 
