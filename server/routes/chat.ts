@@ -8,6 +8,7 @@ import { getEmotionState, updateEmotionState, buildEmotionPrompt } from '../serv
 import type { Mood } from '../services/emotion';
 import { getRelationshipState, updateRelationshipState, buildRelationshipPrompt } from '../services/relationship';
 import { auditInteraction } from '../services/interactionAudit';
+import { extractDateEvent, addReminder } from '../services/reminder';
 import { memoryConfig } from '../utils/memoryConfig';
 import { logMemoryDebug, createDebugContext } from '../utils/memoryDebug';
 import { estimateTokens, fitRecentMessagesToBudget, trimToTokenBudget, totalMessageTokens } from '../utils/tokenBudget';
@@ -132,6 +133,13 @@ function scheduleChatFollowUps(characterId: number | undefined, currentUserText:
   }
   maybeUpdateSummary(characterId);
   maybeExtractPersonality(characterId).catch(() => {});
+
+  if (currentUserText) {
+    const dateEvent = extractDateEvent(currentUserText);
+    if (dateEvent) {
+      try { addReminder(characterId, dateEvent.title, dateEvent.remindAt); } catch (error) { console.error('[Reminder] add failed:', error); }
+    }
+  }
 
   const userId = getUserIdFromCharacter(characterId);
   if (userId && currentUserText) {
