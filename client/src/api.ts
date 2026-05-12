@@ -462,6 +462,132 @@ export async function getRelationship(characterId: number, userId: number): Prom
   }
 }
 
+// ====== 主动消息 ======
+
+export interface InitiativeEligibility {
+  eligible: boolean;
+  reason?: string;
+}
+
+export async function checkInitiativeEligibility(
+  characterId: number,
+  userId: number,
+  sessionCount: number
+): Promise<InitiativeEligibility> {
+  try {
+    const res = await fetchApi(
+      `/api/data/unread-initiative/${characterId}?userId=${userId}&sessionCount=${sessionCount}`,
+      undefined,
+      '检查主动消息失败'
+    );
+    if (!res.ok) return { eligible: false };
+    return await readJsonApiResponse<InitiativeEligibility>(
+      res,
+      '检查主动消息失败',
+      getApiProxyHint('检查主动消息失败')
+    );
+  } catch {
+    return { eligible: false };
+  }
+}
+
+export async function generateInitiativeMessage(
+  character: Character,
+  messages: ChatMessage[],
+  userId: number
+): Promise<string[]> {
+  const res = await fetchApi(`/api/data/initiative/${character.id}?userId=${userId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character, messages }),
+  }, '生成主动消息失败');
+  const data = await readJsonApiResponse<{ replies?: string[]; error?: string }>(
+    res,
+    '生成主动消息失败',
+    getApiProxyHint('生成主动消息失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '生成主动消息失败');
+  return data?.replies || [];
+}
+
+// ====== 记忆可视化 ======
+
+export interface MemoryItem {
+  id: number;
+  text: string;
+  raw_text: string;
+  memory_type: string;
+  importance: number;
+  keywords: string;
+  hit_count: number;
+  created_at: string;
+}
+
+export async function getMemories(characterId: number, userId: number): Promise<MemoryItem[]> {
+  const res = await fetchApi(`/api/data/memories/${characterId}?userId=${userId}`, undefined, '获取记忆失败');
+  const data = await readJsonApiResponse<{ memories?: MemoryItem[] }>(
+    res,
+    '获取记忆失败',
+    getApiProxyHint('获取记忆失败')
+  );
+  if (!res.ok) throw new Error('获取记忆失败');
+  return data?.memories || [];
+}
+
+export async function deleteMemory(memoryId: number, userId: number): Promise<void> {
+  const res = await fetchApi(
+    `/api/data/memories/${memoryId}?userId=${userId}`,
+    { method: 'DELETE' },
+    '删除记忆失败'
+  );
+  const data = await readJsonApiResponse<{ error?: string }>(
+    res,
+    '删除记忆失败',
+    getApiProxyHint('删除记忆失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '删除记忆失败');
+}
+
+export interface SummaryInfo {
+  summary: string;
+  memoryCount: number;
+}
+
+export async function getSummaryInfo(characterId: number, userId: number): Promise<SummaryInfo | null> {
+  try {
+    const res = await fetchApi(`/api/data/summary/${characterId}?userId=${userId}`, undefined, '获取摘要失败');
+    if (!res.ok) return null;
+    return await readJsonApiResponse<SummaryInfo>(
+      res,
+      '获取摘要失败',
+      getApiProxyHint('获取摘要失败')
+    );
+  } catch {
+    return null;
+  }
+}
+
+export interface PersonalityTraitItem {
+  key: string;
+  value: string;
+  confidence: number;
+}
+
+export async function getPersonalityTraitsList(characterId: number, userId: number): Promise<PersonalityTraitItem[]> {
+  try {
+    const res = await fetchApi(`/api/data/personality/${characterId}?userId=${userId}`, undefined, '获取人格特征失败');
+    if (!res.ok) return [];
+    const data = await readJsonApiResponse<{ traits?: PersonalityTraitItem[] }>(
+      res,
+      '获取人格特征失败',
+      getApiProxyHint('获取人格特征失败')
+    );
+    return data?.traits || [];
+  } catch {
+    return [];
+  }
+}
+
 // ====== 流式聊天 ======
 
 export async function sendMessageStream(

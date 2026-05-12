@@ -3,6 +3,10 @@ import db from '../db';
 import { readEmotionState, type Mood } from '../services/emotion';
 import { readRelationshipState, type RelationshipPhase } from '../services/relationship';
 import { ensureCharacterOwnership } from '../utils/ownership';
+import { checkInitiativeEligibility, generateInitiativeMessage } from '../services/initiative';
+import { getMemoryCount, getAllMemoryTexts, searchMemory, getCoreMemories } from '../services/memory';
+import { getSummary } from '../services/summary';
+import { getPersonalityTraits, getUserIdFromCharacter } from '../services/personality';
 
 export const dataRouter = Router();
 
@@ -332,5 +336,149 @@ dataRouter.get('/relationship/:characterId', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Get relationship error:', err?.message);
     res.status(500).json({ error: '获取关系状态失败' });
+  }
+});
+
+// ====== 主动消息 ======
+
+// 检查是否可以发送主动消息
+ dataRouter.get('/unread-initiative/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const sessionCount = Number(req.query.sessionCount || 0);
+    const eligibility = checkInitiativeEligibility(characterId, sessionCount);
+
+    res.json(eligibility);
+  } catch (err: any) {
+    console.error('Check initiative error:', err?.message);
+    res.status(500).json({ eligible: false, reason: '检查失败' });
+  }
+});
+
+// 生成主动消息
+ dataRouter.post('/initiative/:characterId', async (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const { character, messages } = req.body;
+    if (!character || !messages) {
+      res.status(400).json({ error: '参数不完整' });
+      return;
+    }
+
+    const replies = await generateInitiativeMessage(character, messages, characterId);
+    res.json({ replies });
+  } catch (err: any) {
+    console.error('Generate initiative error:', err?.message);
+    res.status(500).json({ error: '生成主动消息失败' });
+  }
+});
+
+// ====== 记忆可视化 ======
+
+// 获取某角色的记忆列表
+ dataRouter.get('/memories/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const rows = db.prepare(
+      `SELECT id, text, raw_text, memory_type, importance, keywords, hit_count, created_at
+       FROM memories
+       WHERE character_id = ? AND is_active = 1
+         AND (expires_at IS NULL OR expires_at > datetime('now'))
+       ORDER BY importance DESC, created_at DESC`
+    ).all(characterId);
+
+    res.json({ memories: rows });
+  } catch (err: any) {
+    console.error('Get memories error:', err?.message);
+    res.status(500).json({ error: '获取记忆失败' });
+  }
+});
+
+// 删除单条记忆
+ dataRouter.delete('/memories/:memoryId', (req: Request, res: Response) => {
+  try {
+    const memoryId = Number(req.params.memoryId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    if (!memoryId || isNaN(memoryId)) {
+      res.status(400).json({ error: '无效的记忆 ID' });
+      return;
+    }
+
+    // 先查出 memory 对应的 character_id，再做归属校验
+    const memory = db.prepare('SELECT character_id FROM memories WHERE id = ?').get(memoryId) as
+      | { character_id: number }
+      | undefined;
+
+    if (!memory) {
+      res.status(404).json({ error: '记忆不存在' });
+      return;
+    }
+
+    const { ok } = ensureCharacterOwnership(memory.character_id, userId, res);
+    if (!ok) return;
+
+    db.prepare('UPDATE memories SET is_active = 0, updated_at = datetime(\'now\') WHERE id = ?').run(memoryId);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Delete memory error:', err?.message);
+    res.status(500).json({ error: '删除记忆失败' });
+  }
+});
+
+// 获取用户画像摘要
+ dataRouter.get('/summary/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const summary = getSummary(characterId);
+    const memoryCount = getMemoryCount(characterId);
+
+    res.json({ summary: summary || '', memoryCount });
+  } catch (err: any) {
+    console.error('Get summary error:', err?.message);
+    res.status(500).json({ error: '获取摘要失败' });
+  }
+});
+
+// 获取人格特征
+ dataRouter.get('/personality/:characterId', (req: Request, res: Response) => {
+  try {
+    const characterId = Number(req.params.characterId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+
+    const { ok } = ensureCharacterOwnership(characterId, userId, res);
+    if (!ok) return;
+
+    const charUserId = getUserIdFromCharacter(characterId);
+    if (!charUserId) {
+      res.json({ traits: [] });
+      return;
+    }
+
+    const traits = getPersonalityTraits(charUserId);
+    res.json({ traits });
+  } catch (err: any) {
+    console.error('Get personality error:', err?.message);
+    res.status(500).json({ error: '获取人格特征失败' });
   }
 });

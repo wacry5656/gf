@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Character, ChatMessage, EmotionInfo, RelationshipInfo } from '../api'
-import { clearMessages, getEmotion, getRelationship, saveMessage, sendMessage, sendMessageStream, StreamChatError } from '../api'
+import { checkInitiativeEligibility, clearMessages, generateInitiativeMessage, getEmotion, getRelationship, saveMessage, sendMessage, sendMessageStream, StreamChatError } from '../api'
 import { clearChatDraft, getChatDraft, saveChatDraft } from '../userSession'
+import MemoryPanel from './MemoryPanel.vue'
 
 const props = defineProps<{
   character: Character
@@ -23,7 +24,12 @@ const chatBody = ref<HTMLElement | null>(null)
 const emotionInfo = ref<EmotionInfo | null>(null)
 const relationshipInfo = ref<RelationshipInfo | null>(null)
 const showMobilePanel = ref(false)
+const showMemoryPanel = ref(false)
+const initiativeLoading = ref(false)
+const sessionInitiativeCount = ref(0)
 let statusRequestId = 0
+let initiativeTimer: ReturnType<typeof setTimeout> | null = null
+let initiativePollInterval: ReturnType<typeof setInterval> | null = null
 
 function displayPersonality(raw: string): string {
   const publicText = (raw || '')
@@ -257,7 +263,93 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
-/* unused */
+// ====== 主动消息 ======
+
+function clearInitiativeTimers() {
+  if (initiativeTimer) {
+    clearTimeout(initiativeTimer)
+    initiativeTimer = null
+  }
+  if (initiativePollInterval) {
+    clearInterval(initiativePollInterval)
+    initiativePollInterval = null
+  }
+}
+
+function startInitiativePolling() {
+  clearInitiativeTimers()
+
+  // 立即检查一次
+  checkAndSendInitiative()
+
+  // 每 30 秒检查一次
+  initiativePollInterval = setInterval(() => {
+    checkAndSendInitiative()
+  }, 30000)
+}
+
+async function checkAndSendInitiative() {
+  if (!props.character.id || !props.userId) return
+  if (loading.value || initiativeLoading.value) return
+  if (props.messages.length === 0) return
+
+  // 最后一条必须是用户发的
+  const lastMsg = props.messages[props.messages.length - 1]
+  if (lastMsg.role !== 'user') return
+
+  try {
+    const eligibility = await checkInitiativeEligibility(
+      props.character.id,
+      props.userId,
+      sessionInitiativeCount.value
+    )
+
+    if (!eligibility.eligible) return
+
+    initiativeLoading.value = true
+
+    // 显示 typing
+    const typingMsg: ChatMessage = { role: 'assistant', content: '\u200B' }
+    const withTyping = [...props.messages, typingMsg]
+    emit('update:messages', withTyping)
+    scrollToBottom()
+
+    // 生成主动消息
+    const replies = await generateInitiativeMessage(
+      props.character,
+      props.messages,
+      props.userId
+    )
+
+    if (replies.length > 0) {
+      sessionInitiativeCount.value++
+      const finalMessages = [...props.messages]
+      for (const reply of replies) {
+        finalMessages.push({ role: 'assistant', content: reply })
+      }
+      emit('update:messages', finalMessages)
+      fetchStatus()
+    } else {
+      // 生成失败，移除 typing
+      emit('update:messages', props.messages)
+    }
+  } catch (e: any) {
+    console.error('[Initiative] 主动消息失败:', e)
+    // 移除 typing
+    emit('update:messages', props.messages)
+  } finally {
+    initiativeLoading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchStatus()
+  startInitiativePolling()
+})
+
+onUnmounted(() => {
+  clearInitiativeTimers()
+})
 </script>
 
 <template>
@@ -332,6 +424,9 @@ function handleKeydown(e: KeyboardEvent) {
           <span class="badge-phase">{{ phaseLabel }}</span>
         </div>
         <p class="relationship-hint">{{ relationshipHint }}</p>
+        <button class="btn-memory" @click="showMemoryPanel = true">
+          <span>📝</span> 关于你
+        </button>
       </div>
     </aside>
 
@@ -346,6 +441,7 @@ function handleKeydown(e: KeyboardEvent) {
           <span class="header-status">{{ moodEmoji }} {{ moodLabel }} · {{ phaseLabel }}</span>
         </div>
         <div class="header-actions">
+          <button class="tool-button" @click="showMemoryPanel = true">记忆</button>
           <button
             v-if="messages.length > 0"
             class="tool-button"
@@ -376,7 +472,10 @@ function handleKeydown(e: KeyboardEvent) {
           </div>
           <div class="msg-bubble-wrap" :class="{ 'no-avatar': i > 0 && messages[i - 1].role === msg.role }">
             <div v-if="!(i > 0 && messages[i - 1].role === msg.role) && msg.role === 'assistant'" class="msg-name">{{ character.name }}</div>
-            <div class="msg-bubble">{{ msg.content }}</div>
+            <div v-if="msg.content === '\u200B'" class="msg-bubble typing">
+              <span class="typing-dots"><span></span><span></span><span></span></span>
+            </div>
+            <div v-else class="msg-bubble">{{ msg.content }}</div>
           </div>
         </div>
 
@@ -406,6 +505,23 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
       </footer>
     </section>
+
+    <!-- Memory Panel Overlay -->
+    <Transition name="fade">
+      <div v-if="showMemoryPanel" class="memory-overlay" @click="showMemoryPanel = false">
+        <div class="memory-panel-modal" @click.stop>
+          <div class="memory-panel-header-bar">
+            <h3>{{ character.name }} 的记忆</h3>
+            <button class="btn-close-memory" @click="showMemoryPanel = false">✕</button>
+          </div>
+          <MemoryPanel
+            :character-id="character.id || 0"
+            :user-id="userId"
+            :character-name="character.name"
+          />
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -1098,5 +1214,95 @@ function handleKeydown(e: KeyboardEvent) {
   .msg-user .msg-bubble-wrap.no-avatar {
     margin-right: 36px;
   }
+}
+
+/* ====== Memory Panel Overlay ====== */
+.memory-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.memory-panel-modal {
+  background: #fff;
+  border-radius: 20px;
+  width: 100%;
+  max-width: 520px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.memory-panel-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f0f2f5;
+  flex-shrink: 0;
+}
+
+.memory-panel-header-bar h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #111827;
+}
+
+.btn-close-memory {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.btn-close-memory:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+/* Sidebar memory button */
+.btn-memory {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  background: none;
+  color: #6b7280;
+  font-size: 0.82rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.btn-memory:hover {
+  border-color: #a78bfa;
+  color: #6b21a8;
+  background: #f5f3ff;
+}
+
+/* Fade transition */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>
