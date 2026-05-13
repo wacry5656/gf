@@ -348,6 +348,7 @@ chatRouter.post('/chat/stream', async (req: Request, res: Response) => {
           const cleaned = cleanReply(fullReply, currentUserText, character.relationshipMode || 'lover', messages);
           const replies = splitReply(cleaned);
           if (!controller.signal.aborted) {
+            clearInterval(degradedHeartbeat);
             writeDone(res, replies);
             responseFinished = true;
             console.log(`[Chat/Stream][degraded] done 已发送`);
@@ -1325,7 +1326,7 @@ function isBadChatLine(line: string): boolean {
  */
 function splitReply(text: string): string[] {
   // 先按换行拆
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0 && !isBadChatLine(l)).slice(0, 3);
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0 && !isBadChatLine(l));
 
   if (lines.length >= 2) {
     return lines;
@@ -1357,7 +1358,7 @@ function splitReply(text: string): string[] {
         merged.push(buffer.trim());
       }
     }
-    if (merged.length >= 2) return merged.filter(line => !isBadChatLine(line)).slice(0, 3);
+    if (merged.length >= 2) return merged.filter(line => !isBadChatLine(line));
   }
 
   return [isBadChatLine(single) ? '我在' : single];

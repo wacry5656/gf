@@ -202,7 +202,7 @@ const migrations: Array<{ sql: string }> = [
 ];
 
 for (const m of migrations) {
-  try { db.exec(m.sql); } catch { /* 列已存在，忽略 */ }
+  try { db.exec(m.sql); } catch (err: any) { if (!err?.message?.includes('duplicate column name')) { console.error('Migration error:', err); throw err; } }
 }
 
 export default db;

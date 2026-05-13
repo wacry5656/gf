@@ -6,9 +6,9 @@ export interface BudgetChatMessage {
 export function estimateTokens(text: string): number {
   if (!text) return 0;
 
-  const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const cjk = (text.match(/[\p{Ideographic}\p{Emoji_Presentation}]/gu) || []).length;
   const asciiWords = (text.match(/[A-Za-z0-9_]+/g) || []).length;
-  const punctuation = (text.match(/[^\sA-Za-z0-9_\u4e00-\u9fff]/g) || []).length;
+  const punctuation = (text.match(/[^\sA-Za-z0-9_\p{Ideographic}\p{Emoji_Presentation}]/gu) || []).length;
   return Math.ceil(cjk * 1.1 + asciiWords * 1.3 + punctuation * 0.5);
 }
 

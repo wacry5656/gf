@@ -7,7 +7,7 @@ import { authRouter } from './routes/auth';
 import { dataRouter } from './routes/data';
 import './db'; // 确保数据库初始化
 
-dotenv.config();
+process.on('uncaughtException', (err) => { console.error('[Process] 发现未捕获异常:', err); }); process.on('unhandledRejection', (reason) => { console.error('[Process] 未处理的Promise异常:', reason); }); dotenv.config();
 
 // ========== 启动时配置自检 ==========
 function validateConfig() {
