@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import type { MemoryItem, SummaryInfo, PersonalityTraitItem, DiaryEntry, ReminderItem, ChatStats, EmotionSnapshot } from '../api'
-import { getMemories, deleteMemory, getSummaryInfo, getPersonalityTraitsList, getDiaryEntries, getReminders, deleteReminder, getChatStats, getEmotionHistory } from '../api'
+import { getMemories, deleteMemory, correctMemory, getSummaryInfo, getPersonalityTraitsList, getDiaryEntries, getReminders, deleteReminder, getChatStats, getEmotionHistory } from '../api'
 
 const props = defineProps<{
   characterId: number
@@ -19,6 +19,7 @@ const emotionSnapshots = ref<EmotionSnapshot[]>([])
 const loading = ref(false)
 const error = ref('')
 const deletingId = ref<number | null>(null)
+const editingId = ref<number | null>(null)
 const activeTab = ref<'summary' | 'diary' | 'memories' | 'stats'>('summary')
 
 const memoryTypeLabel: Record<string, string> = {
@@ -97,6 +98,32 @@ async function onDeleteMemory(memoryId: number) {
     alert(e?.message || '删除失败')
   } finally {
     deletingId.value = null
+  }
+}
+
+async function onCorrectMemory(memory: MemoryItem) {
+  const originalText = (memory.raw_text || memory.text).trim()
+  const corrected = window.prompt('请输入纠正后的记忆内容', originalText)
+  if (corrected === null) return
+
+  const trimmed = corrected.trim()
+  if (!trimmed) {
+    alert('更正内容不能为空')
+    return
+  }
+
+  if (trimmed === originalText || trimmed === memory.text.trim()) {
+    return
+  }
+
+  editingId.value = memory.id
+  try {
+    await correctMemory(memory.id, trimmed, props.userId)
+    await loadData()
+  } catch (e: any) {
+    alert(e?.message || '更正失败')
+  } finally {
+    editingId.value = null
   }
 }
 
@@ -245,7 +272,12 @@ onMounted(loadData)
                 {{ memoryTypeLabel[memory.memory_type] || '其他' }}
               </span>
               <span class="memory-importance" v-if="memory.importance >= 4">★</span>
-              <button class="btn-delete-memory" :disabled="deletingId === memory.id" @click="onDeleteMemory(memory.id)" title="删除">{{ deletingId === memory.id ? '...' : '✕' }}</button>
+              <div class="memory-actions">
+                <button class="btn-edit-memory" :disabled="editingId === memory.id || deletingId === memory.id" @click="onCorrectMemory(memory)" title="更正">
+                  {{ editingId === memory.id ? '处理中' : '更正' }}
+                </button>
+                <button class="btn-delete-memory" :disabled="deletingId === memory.id || editingId === memory.id" @click="onDeleteMemory(memory.id)" title="删除">{{ deletingId === memory.id ? '...' : '✕' }}</button>
+              </div>
             </div>
             <div class="memory-text">{{ memory.text }}</div>
             <div class="memory-meta">
@@ -364,8 +396,12 @@ onMounted(loadData)
 .memory-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .memory-type-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
 .memory-importance { color: #f59e0b; font-size: 0.85rem; }
+.memory-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.btn-edit-memory { background: none; border: 1px solid #e5e7eb; color: #6b7280; font-size: 0.74rem; cursor: pointer; padding: 2px 8px; border-radius: 999px; }
+.btn-edit-memory:hover:not(:disabled) { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
 .btn-delete-memory { margin-left: auto; background: none; border: none; color: #d1d5db; font-size: 0.8rem; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
 .btn-delete-memory:hover { color: #ef4444; background: #fef2f2; }
+.btn-edit-memory:disabled, .btn-delete-memory:disabled { cursor: not-allowed; opacity: 0.6; }
 .memory-text { font-size: 0.88rem; color: var(--text-primary, #374151); line-height: 1.5; margin-bottom: 8px; }
 .memory-meta { display: flex; gap: 12px; font-size: 0.75rem; color: #9ca3af; }
 

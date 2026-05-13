@@ -183,7 +183,7 @@ function testInitiativeUsesLastUserActivity(): void {
     db.prepare('INSERT INTO chat_messages (character_id, role, content, created_at) VALUES (?, ?, ?, ?)')
       .run(characterId, 'assistant', '九分钟前的回复', nineMinutesAgo);
 
-    const result = checkInitiativeEligibility(characterId, 0);
+    const result = checkInitiativeEligibility(characterId, 0, new Date('2026-05-13T14:00:00'));
     assert(result.eligible, `用户已空闲足够久时应允许主动消息 (got eligible=${result.eligible}, reason=${result.reason || 'none'})`);
   } finally {
     cleanup(userId, characterId);

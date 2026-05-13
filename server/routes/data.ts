@@ -4,7 +4,7 @@ import { readEmotionState, type Mood } from '../services/emotion';
 import { readRelationshipState, type RelationshipPhase } from '../services/relationship';
 import { ensureCharacterOwnership } from '../utils/ownership';
 import { checkInitiativeEligibility, generateInitiativeMessage, checkLongAbsence, generateLongAbsenceGreeting, shouldTriggerRandomEvent, generateRandomEvent, triggerDueReminders, shouldSendLongAbsenceGreeting } from '../services/initiative';
-import { getMemoryCount, getAllMemoryTexts, searchMemory, getCoreMemories } from '../services/memory';
+import { getMemoryCount, getAllMemoryTexts, searchMemory, getCoreMemories, correctMemory } from '../services/memory';
 import { getSummary } from '../services/summary';
 import { getPersonalityTraits, getUserIdFromCharacter } from '../services/personality';
 import { getDiaryEntries, getDiaryForDate, generateDiaryForDate } from '../services/diary';
@@ -531,6 +531,48 @@ dataRouter.get('/long-absence/:characterId', async (req: Request, res: Response)
   } catch (err: any) {
     console.error('Get memories error:', err?.message);
     res.status(500).json({ error: '获取记忆失败' });
+  }
+});
+
+// 更正单条记忆
+dataRouter.post('/memories/:memoryId/correct', async (req: Request, res: Response) => {
+  try {
+    const memoryId = Number(req.params.memoryId);
+    const userId = req.query.userId ? Number(req.query.userId) : NaN;
+    const correctedText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+
+    if (!memoryId || isNaN(memoryId)) {
+      res.status(400).json({ error: '无效的记忆 ID' });
+      return;
+    }
+
+    if (!correctedText) {
+      res.status(400).json({ error: '更正后的记忆不能为空' });
+      return;
+    }
+
+    const memory = db.prepare('SELECT character_id, is_active FROM memories WHERE id = ?').get(memoryId) as
+      | { character_id: number; is_active: number }
+      | undefined;
+
+    if (!memory) {
+      res.status(404).json({ error: '记忆不存在' });
+      return;
+    }
+
+    if (!memory.is_active) {
+      res.status(400).json({ error: '记忆已失效，无法更正' });
+      return;
+    }
+
+    const { ok } = ensureCharacterOwnership(memory.character_id, userId, res);
+    if (!ok) return;
+
+    await correctMemory(memory.character_id, memoryId, correctedText, { role: 'user' });
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Correct memory error:', err?.message);
+    res.status(500).json({ error: '更正记忆失败' });
   }
 });
 

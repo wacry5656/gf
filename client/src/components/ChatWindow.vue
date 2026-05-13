@@ -197,6 +197,10 @@ function scrollToBottom() {
 
 watch(() => props.messages.length, scrollToBottom)
 
+function stripTypingMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((message) => message.content !== '\u200B')
+}
+
 function applyAssistantReplies(baseMessages: ChatMessage[], replies: string[], streamContent = '') {
   if (replies.length > 0) {
     const finalMessages = [...baseMessages]
@@ -229,13 +233,13 @@ async function send() {
   streaming.value = false
 
   let connected = false
+  let streamContent = ''
 
   try {
     if (props.character.id) {
       await saveMessage(props.character.id, 'user', text, props.userId)
     }
 
-    let streamContent = ''
     const replies = await sendMessageStream(
       props.character,
       updated,
@@ -254,7 +258,8 @@ async function send() {
     applyAssistantReplies(updated, replies, streamContent)
     fetchStatus()
   } catch (e: any) {
-    const shouldFallbackToNonStream = !streaming.value && !(e instanceof StreamChatError && e.stage === 'after-partial')
+    const hadPartialReply = streamContent.trim().length > 0 || (e instanceof StreamChatError && e.stage === 'after-partial')
+    const shouldFallbackToNonStream = !streaming.value || hadPartialReply
 
     if (shouldFallbackToNonStream) {
       try {
@@ -276,7 +281,7 @@ async function send() {
     } else {
       error.value = e.message || '发送失败'
     }
-    if (!(e instanceof StreamChatError && e.stage === 'after-partial') && !streaming.value) {
+    if (!hadPartialReply && !streaming.value) {
       emit('update:messages', updated)
       if (!inputText.value) {
         inputText.value = rawText
@@ -356,12 +361,13 @@ async function checkAndSendInitiative() {
   if (props.messages.length === 0) return
 
   initiativeLoading.value = true
+  const baseMessages = stripTypingMessages(props.messages)
 
   try {
     // 先尝试随机事件（15%概率触发）
     const randomResult = await triggerRandomEvent(props.character.id, props.userId)
     if (randomResult.triggered && randomResult.replies.length > 0) {
-      const finalMessages = [...props.messages]
+      const finalMessages = [...baseMessages]
       for (const reply of randomResult.replies) {
         finalMessages.push({ role: 'assistant', content: reply })
       }
@@ -380,20 +386,20 @@ async function checkAndSendInitiative() {
 
     // 显示 typing
     const typingMsg: ChatMessage = { role: 'assistant', content: '\u200B' }
-    const withTyping = [...props.messages, typingMsg]
+    const withTyping = [...baseMessages, typingMsg]
     emit('update:messages', withTyping)
     scrollToBottom()
 
     // 生成主动消息
     const replies = await generateInitiativeMessage(
       props.character,
-      props.messages,
+      baseMessages,
       props.userId
     )
 
     if (replies.length > 0) {
       sessionInitiativeCount.value++
-      const finalMessages = [...props.messages]
+      const finalMessages = [...baseMessages]
       for (const reply of replies) {
         finalMessages.push({ role: 'assistant', content: reply })
       }
@@ -401,12 +407,12 @@ async function checkAndSendInitiative() {
       fetchStatus()
     } else {
       // 生成失败，移除 typing
-      emit('update:messages', props.messages)
+      emit('update:messages', baseMessages)
     }
   } catch (e: any) {
     console.error('[Initiative] 主动消息失败:', e)
     // 移除 typing
-    emit('update:messages', props.messages)
+    emit('update:messages', baseMessages)
   } finally {
     initiativeLoading.value = false
   }

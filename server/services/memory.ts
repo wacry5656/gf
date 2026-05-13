@@ -122,6 +122,10 @@ interface MemoryMetadata {
   [key: string]: any;
 }
 
+interface AddSingleMemoryOptions {
+  throwOnError?: boolean;
+}
+
 /**
  * 写入记忆，写入前做事实抽取 + 分类 + 去重 + 冲突检测
  */
@@ -168,8 +172,9 @@ function buildMemoryCandidates(text: string): string[] {
 async function addSingleMemory(
   characterId: number,
   text: string,
-  metadata: MemoryMetadata = {}
-): Promise<void> {
+  metadata: MemoryMetadata = {},
+  options: AddSingleMemoryOptions = {}
+): Promise<number | null> {
   try {
     // ---- 事实抽取 ----
     const { textForEmbed, normalizedFact, category: factCategory } = getTextForEmbedding(text);
@@ -180,7 +185,7 @@ async function addSingleMemory(
 
     // ---- 写入前去重 ----
     const isDuplicate = checkDuplicate(characterId, embedding, displayText);
-    if (isDuplicate) return;
+    if (isDuplicate) return null;
 
     // ---- 计算重要性 ----
     const importance = extractMemoryImportance(text);
@@ -213,14 +218,69 @@ async function addSingleMemory(
     const result = db.prepare(
       'INSERT INTO memories (character_id, text, raw_text, normalized_fact_text, embedding, importance, memory_type, keywords, expires_at, relationship_subtype, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(characterId, displayText, text, normalizedFact, embeddingJson, importance, memoryType, JSON.stringify(keywords), expiresAt, relationshipSubtype, metadataJson);
+    const newId = Number(result.lastInsertRowid);
 
     // ---- 冲突解决：将旧记忆标记为 inactive ----
     if (conflict.hasConflict) {
-      const newId = Number(result.lastInsertRowid);
       resolveMemoryConflict(conflict.conflictingIds, newId);
     }
+
+    return newId;
   } catch (err: any) {
     console.error('addMemory 失败:', err?.message);
+    if (options.throwOnError) throw err;
+    return null;
+  }
+}
+
+export async function correctMemory(
+  characterId: number,
+  memoryId: number,
+  correctedText: string,
+  metadata: MemoryMetadata = {}
+): Promise<void> {
+  const trimmed = correctedText.trim();
+  if (!trimmed) {
+    throw new Error('更正后的记忆不能为空');
+  }
+
+  const existing = db.prepare(
+    'SELECT text, raw_text, is_active FROM memories WHERE id = ? AND character_id = ?'
+  ).get(memoryId, characterId) as { text: string; raw_text: string | null; is_active: number } | undefined;
+
+  if (!existing) {
+    throw new Error('记忆不存在');
+  }
+
+  if (!existing.is_active) {
+    throw new Error('记忆已失效，无法更正');
+  }
+
+  const currentText = (existing.raw_text || existing.text).trim();
+  if (trimmed === currentText || trimmed === existing.text.trim()) {
+    return;
+  }
+
+  db.prepare(
+    "UPDATE memories SET is_active = 0, invalidation_reason = 'corrected', updated_at = datetime('now') WHERE id = ?"
+  ).run(memoryId);
+
+  try {
+    const newId = await addSingleMemory(
+      characterId,
+      trimmed,
+      { ...metadata, correctedFromMemoryId: memoryId, previousMemoryText: currentText },
+      { throwOnError: true }
+    );
+
+    if (newId) {
+      db.prepare("UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE id = ?").run(newId, memoryId);
+    }
+  } catch (err) {
+    db.prepare(
+      "UPDATE memories SET is_active = 1, invalidation_reason = NULL, updated_at = datetime('now') WHERE id = ?"
+    ).run(memoryId);
+    throw err;
   }
 }
 

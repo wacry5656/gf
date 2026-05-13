@@ -46,8 +46,8 @@ const CONFIG = {
   sleepEndHour: 7,
 };
 
-function isSleepTime(): boolean {
-  const hour = new Date().getHours();
+function isSleepTime(now: Date = new Date()): boolean {
+  const hour = now.getHours();
   return hour >= CONFIG.sleepStartHour && hour < CONFIG.sleepEndHour;
 }
 
@@ -64,10 +64,11 @@ function getScheduleDelay(): number {
  */
 export function checkInitiativeEligibility(
   characterId: number,
-  sessionInitiativeCount: number
+  sessionInitiativeCount: number,
+  now: Date = new Date()
 ): { eligible: boolean; reason?: string } {
   // 0. 作息时间：深夜不主动发消息
-  if (isSleepTime()) {
+  if (isSleepTime(now)) {
     return { eligible: false, reason: '作息时间：深夜休息中' };
   }
 

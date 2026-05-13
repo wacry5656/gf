@@ -571,7 +571,7 @@ export async function triggerRandomEvent(characterId: number, userId: number): P
 export interface MemoryItem {
   id: number;
   text: string;
-  raw_text: string;
+  raw_text: string | null;
   memory_type: string;
   importance: number;
   keywords: string;
@@ -602,6 +602,24 @@ export async function deleteMemory(memoryId: number, userId: number): Promise<vo
     getApiProxyHint('删除记忆失败')
   );
   if (!res.ok) throw new Error(data?.error || '删除记忆失败');
+}
+
+export async function correctMemory(memoryId: number, text: string, userId: number): Promise<void> {
+  const res = await fetchApi(
+    `/api/data/memories/${memoryId}/correct?userId=${userId}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    },
+    '更正记忆失败'
+  );
+  const data = await readJsonApiResponse<{ error?: string }>(
+    res,
+    '更正记忆失败',
+    getApiProxyHint('更正记忆失败')
+  );
+  if (!res.ok) throw new Error(data?.error || '更正记忆失败');
 }
 
 export interface SummaryInfo {

@@ -453,6 +453,43 @@ function testSummaryInputConsistency(): void {
   assert(!inputTexts.some((t: string) => t.includes('焦虑')), '已过期 state 不应进入 summary 输入');
 }
 
+// ============================================================
+// 测试 9：错误记忆更正
+// ============================================================
+function testMemoryCorrection(): void {
+  console.log('\n=== 测试 9：错误记忆更正 ===');
+  const cid = 1009;
+
+  const oldId = insertMemory({
+    characterId: cid,
+    text: '我在北京上班',
+    normalizedFact: '用户在北京工作',
+    memoryType: 'fact',
+    embedding: mockEmbedding('用户在北京工作'),
+  });
+
+  const newId = insertMemory({
+    characterId: cid,
+    text: '我在上海上班',
+    normalizedFact: '用户在上海工作',
+    memoryType: 'fact',
+    embedding: mockEmbedding('用户在上海工作'),
+  });
+
+  testDb.prepare(
+    "UPDATE memories SET is_active = 0, invalidation_reason = 'corrected', superseded_by = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(newId, oldId);
+
+  const oldMemory = getMemory(oldId);
+  const activeMemories = getActiveMemories(cid);
+
+  assert(oldMemory.is_active === 0, '被纠正的旧记忆应失活');
+  assert(oldMemory.invalidation_reason === 'corrected', '旧记忆的失效原因应为 corrected');
+  assert(oldMemory.superseded_by === newId, '旧记忆应指向新的更正结果');
+  assert(activeMemories.length === 1, `更正后只应保留 1 条 active 记忆 (got ${activeMemories.length})`);
+  assert(activeMemories[0].id === newId, 'active 记忆应为更正后的新记忆');
+}
+
 /**
  * 模拟 getAllMemoryTexts 逻辑：只取 active + 未过期的记忆
  * （与 memory.ts 中 getAllMemoryTexts 的 SQL 保持一致）
@@ -478,6 +515,7 @@ testMemoryTypeClassification();
 testRelationshipSubtype();
 testPlanCompletion();
 testSummaryInputConsistency();
+testMemoryCorrection();
 
 console.log(`\n════════════════════════════════════`);
 console.log(`结果: ${passed} 通过, ${failed} 失败`);
