@@ -11,12 +11,15 @@ import {
   getReadAloud,
   setReadAloud,
   isSpeechSupported,
+  speak,
   speakSequence,
   cancelSpeak,
   isVoiceInputSupported,
   startVoiceInput,
   type VoiceInputSession,
 } from '../voice'
+import { playEffect, playSound, setSoundEnabled, type EffectType } from '../effects'
+import { getSettings, saveSettings, applyFontScale, type UiSettings } from '../settings'
 
 const props = defineProps<{
   character: Character
@@ -62,16 +65,51 @@ let heartSeq = 0
 let copiedTimer: ReturnType<typeof setTimeout> | null = null
 let lastAffection: number | null = null
 
-const quickActions = [
-  { emoji: '🌹', label: '送花', text: '送你一束花🌹' },
-  { emoji: '🤗', label: '抱抱', text: '抱抱你～' },
+interface QuickAction {
+  emoji: string
+  label: string
+  text: string
+  effect?: EffectType
+}
+
+const quickActions: QuickAction[] = [
+  { emoji: '🌹', label: '送花', text: '送你一束花🌹', effect: 'petals' },
+  { emoji: '🤗', label: '抱抱', text: '抱抱你～', effect: 'hearts' },
+  { emoji: '😘', label: '亲亲', text: '么么哒😘', effect: 'hearts' },
+  { emoji: '🎆', label: '烟花', text: '给你放一场烟花🎆', effect: 'fireworks' },
+  { emoji: '🎂', label: '蛋糕', text: '给你订了个蛋糕🎂', effect: 'confetti' },
+  { emoji: '⭐', label: '许愿', text: '给你摘颗星星⭐', effect: 'stars' },
   { emoji: '☕', label: '奶茶', text: '请你喝奶茶🧋' },
-  { emoji: '😘', label: '亲亲', text: '么么哒😘' },
-  { emoji: '🍜', label: '吃了吗', text: '吃饭了吗？' },
   { emoji: '🌙', label: '晚安', text: '晚安，做个好梦🌙' },
 ]
 
 const charCount = computed(() => inputText.value.length)
+
+// ====== UI 设置 ======
+const settings = ref<UiSettings>(getSettings())
+const showSettings = ref(false)
+
+function updateSettings(patch: Partial<UiSettings>) {
+  settings.value = { ...settings.value, ...patch }
+  saveSettings(settings.value)
+  setSoundEnabled(settings.value.sound)
+  applyFontScale(settings.value.fontScale)
+}
+
+// ====== 消息右键 / 长按菜单 ======
+interface CtxMenuState {
+  x: number
+  y: number
+  sig: string
+  content: string
+}
+const ctxMenu = ref<CtxMenuState | null>(null)
+let longPressTimer: ReturnType<typeof setTimeout> | null = null
+
+const headerStatus = computed(() => {
+  if (loading.value || streaming.value) return '正在输入…'
+  return `${moodEmoji.value} ${moodLabel.value} · ${phaseLabel.value}`
+})
 
 function msgSignature(msg: ChatMessage, index: number): string {
   return `${index}::${msg.role}::${msg.content.slice(0, 24)}`
@@ -280,10 +318,16 @@ function applyAssistantReplies(baseMessages: ChatMessage[], replies: string[], s
 
 // ====== 朗读（TTS） ======
 
-function maybeSpeak(replies: string[]) {
-  if (!readAloud.value || !speechSupported) return
+function onRepliesArrived(replies: string[]) {
   const texts = replies.map((r) => r.trim()).filter((r) => r && r !== '​')
-  if (texts.length > 0) speakSequence(texts, props.character.gender)
+  if (texts.length === 0) return
+  playSound('receive')
+  if (readAloud.value && speechSupported) speakSequence(texts, props.character.gender)
+}
+
+// 兼容旧调用名
+function maybeSpeak(replies: string[]) {
+  onRepliesArrived(replies)
 }
 
 function toggleReadAloud() {
@@ -327,10 +371,14 @@ function focusComposer() {
 
 // ====== 快捷互动 ======
 
-async function quickSend(text: string) {
+async function quickSend(action: QuickAction) {
   if (loading.value) return
   showQuickActions.value = false
-  inputText.value = text
+  if (action.effect) {
+    playEffect(action.effect)
+    playSound('gift')
+  }
+  inputText.value = action.text
   await send()
 }
 
@@ -343,6 +391,7 @@ function toggleReaction(sig: string) {
   } else {
     set.add(sig)
     burstHearts(['💖', '💗', '💕'])
+    playSound('like')
   }
   reactedSet.value = set
 }
@@ -359,6 +408,66 @@ async function copyMessage(sig: string, content: string) {
     error.value = '复制失败'
   }
 }
+
+// ====== 右键 / 长按上下文菜单 ======
+
+function openContextMenu(event: MouseEvent, msg: ChatMessage, index: number) {
+  event.preventDefault()
+  const menuW = 150
+  const menuH = 176
+  const x = Math.min(event.clientX, window.innerWidth - menuW - 8)
+  const y = Math.min(event.clientY, window.innerHeight - menuH - 8)
+  ctxMenu.value = { x, y, sig: msgSignature(msg, index), content: msg.content }
+}
+
+function openContextMenuAt(clientX: number, clientY: number, msg: ChatMessage, index: number) {
+  const menuW = 150
+  const menuH = 176
+  const x = Math.min(clientX, window.innerWidth - menuW - 8)
+  const y = Math.min(clientY, window.innerHeight - menuH - 8)
+  ctxMenu.value = { x, y, sig: msgSignature(msg, index), content: msg.content }
+}
+
+function onBubbleTouchStart(event: TouchEvent, msg: ChatMessage, index: number) {
+  const touch = event.touches[0]
+  if (!touch) return
+  const { clientX, clientY } = touch
+  clearLongPress()
+  longPressTimer = setTimeout(() => {
+    openContextMenuAt(clientX, clientY, msg, index)
+  }, 460)
+}
+
+function clearLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer)
+    longPressTimer = null
+  }
+}
+
+function closeContextMenu() {
+  ctxMenu.value = null
+}
+
+function ctxCopy() {
+  if (ctxMenu.value) copyMessage(ctxMenu.value.sig, ctxMenu.value.content)
+  closeContextMenu()
+}
+
+function ctxSpeak() {
+  if (ctxMenu.value) speak(ctxMenu.value.content, props.character.gender)
+  closeContextMenu()
+}
+
+function ctxToggleReaction() {
+  if (ctxMenu.value) toggleReaction(ctxMenu.value.sig)
+  closeContextMenu()
+}
+
+const ctxIsReacted = computed(() => {
+  const menu = ctxMenu.value
+  return menu ? reactedSet.value.has(menu.sig) : false
+})
 
 // ====== 爱心特效 ======
 
@@ -386,6 +495,7 @@ watch(
     if (typeof next !== 'number') return
     if (lastAffection !== null && next - lastAffection >= 0.02) {
       burstHearts(['💗', '💖', '💕', '💘', '✨'])
+      playEffect('hearts')
     }
     lastAffection = next
   },
@@ -398,6 +508,7 @@ function onChatScroll() {
   if (!el) return
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   showScrollBtn.value = distanceFromBottom > 240
+  if (ctxMenu.value) ctxMenu.value = null
 }
 
 async function send() {
@@ -406,6 +517,7 @@ async function send() {
   if (!text || loading.value) return
 
   error.value = ''
+  playSound('send')
   const userMsg: ChatMessage = { role: 'user', content: text }
   const updated = [...props.messages, userMsg]
   emit('update:messages', updated)
@@ -604,11 +716,14 @@ async function checkAndSendInitiative() {
 function closePopovers() {
   showEmoji.value = false
   showQuickActions.value = false
+  ctxMenu.value = null
 }
 
 onMounted(() => {
   startInitiativePolling()
   document.addEventListener('click', closePopovers)
+  setSoundEnabled(settings.value.sound)
+  applyFontScale(settings.value.fontScale)
 })
 
 watch(
@@ -632,6 +747,7 @@ onUnmounted(() => {
   cancelSpeak()
   voiceSession?.stop()
   if (copiedTimer) clearTimeout(copiedTimer)
+  clearLongPress()
   document.removeEventListener('click', closePopovers)
 })
 
@@ -670,7 +786,11 @@ function highlightText(text: string, query: string): string {
 </script>
 
 <template>
-  <div class="chat-shell" :class="`tone-${bubbleTone}`">
+  <div
+    class="chat-shell"
+    :class="[`tone-${bubbleTone}`, { 'entrance-on': settings.entrance }]"
+    :style="{ '--chat-font-scale': settings.fontScale }"
+  >
     <!-- Mobile panel overlay -->
     <Transition name="slide">
       <div v-if="showMobilePanel" class="mobile-panel-overlay" @click="showMobilePanel = false">
@@ -749,16 +869,21 @@ function highlightText(text: string, query: string): string {
 
     <!-- Chat area -->
     <section class="conversation">
-      <AmbientBackground />
+      <AmbientBackground v-if="settings.ambient" />
       <header class="conversation-header">
         <button class="btn-back-mobile" @click="$emit('back')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
         </button>
         <div class="header-center" @click="showMobilePanel = true">
           <span class="header-name">{{ character.name }}</span>
-          <span class="header-status">{{ moodEmoji }} {{ moodLabel }} · {{ phaseLabel }}</span>
+          <span class="header-status" :class="{ typing: loading || streaming }">{{ headerStatus }}</span>
         </div>
         <div class="header-actions">
+          <button
+            class="tool-button tool-icon"
+            title="设置"
+            @click.stop="showSettings = true"
+          >⚙️</button>
           <button
             v-if="speechSupported"
             class="tool-button tool-icon"
@@ -813,6 +938,10 @@ function highlightText(text: string, query: string): string {
               class="msg-bubble has-actions"
               :class="{ reacted: reactedSet.has(msgSignature(msg, i)) }"
               @dblclick="toggleReaction(msgSignature(msg, i))"
+              @contextmenu="openContextMenu($event, msg, i)"
+              @touchstart.passive="onBubbleTouchStart($event, msg, i)"
+              @touchend="clearLongPress"
+              @touchmove="clearLongPress"
             >
               <span class="bubble-text">{{ msg.content }}</span>
               <div class="bubble-tools">
@@ -870,8 +999,9 @@ function highlightText(text: string, query: string): string {
               v-for="qa in quickActions"
               :key="qa.label"
               class="quick-chip"
+              :class="{ 'quick-gift': qa.effect }"
               :disabled="loading"
-              @click="quickSend(qa.text)"
+              @click="quickSend(qa)"
             ><span class="quick-emoji">{{ qa.emoji }}</span>{{ qa.label }}</button>
           </div>
         </Transition>
@@ -962,6 +1092,89 @@ function highlightText(text: string, query: string): string {
             :user-id="userId"
             :character-name="character.name"
           />
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 消息右键 / 长按菜单 -->
+    <Transition name="ctx-pop">
+      <div
+        v-if="ctxMenu"
+        class="ctx-menu"
+        :style="{ left: `${ctxMenu.x}px`, top: `${ctxMenu.y}px` }"
+        @click.stop
+      >
+        <button class="ctx-item" @click="ctxCopy">
+          <span class="ctx-ico">⧉</span> 复制
+        </button>
+        <button v-if="speechSupported" class="ctx-item" @click="ctxSpeak">
+          <span class="ctx-ico">🔊</span> 朗读这条
+        </button>
+        <button class="ctx-item" @click="ctxToggleReaction">
+          <span class="ctx-ico">{{ ctxIsReacted ? '💔' : '💖' }}</span> {{ ctxIsReacted ? '取消喜欢' : '喜欢' }}
+        </button>
+        <div class="ctx-divider"></div>
+        <button class="ctx-item ctx-cancel" @click="closeContextMenu">
+          <span class="ctx-ico">✕</span> 关闭
+        </button>
+      </div>
+    </Transition>
+
+    <!-- 设置面板 -->
+    <Transition name="fade">
+      <div v-if="showSettings" class="settings-overlay" @click="showSettings = false">
+        <div class="settings-modal" @click.stop>
+          <div class="settings-header">
+            <h3>外观与体验</h3>
+            <button class="btn-close-settings" @click="showSettings = false">✕</button>
+          </div>
+          <div class="settings-body">
+            <label class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">氛围背景</span>
+                <span class="setting-desc">聊天区漂浮粒子与柔光</span>
+              </div>
+              <span class="switch" :class="{ on: settings.ambient }" @click="updateSettings({ ambient: !settings.ambient })">
+                <span class="switch-dot"></span>
+              </span>
+            </label>
+
+            <label class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">音效</span>
+                <span class="setting-desc">收发消息、点赞、礼物提示音</span>
+              </div>
+              <span class="switch" :class="{ on: settings.sound }" @click="updateSettings({ sound: !settings.sound })">
+                <span class="switch-dot"></span>
+              </span>
+            </label>
+
+            <label class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">入场动画</span>
+                <span class="setting-desc">新消息气泡的出现动效</span>
+              </div>
+              <span class="switch" :class="{ on: settings.entrance }" @click="updateSettings({ entrance: !settings.entrance })">
+                <span class="switch-dot"></span>
+              </span>
+            </label>
+
+            <div class="setting-row setting-col">
+              <div class="setting-meta">
+                <span class="setting-title">气泡字号</span>
+                <span class="setting-desc">{{ Math.round(settings.fontScale * 100) }}%</span>
+              </div>
+              <input
+                class="setting-slider"
+                type="range"
+                min="0.85"
+                max="1.3"
+                step="0.05"
+                :value="settings.fontScale"
+                @input="updateSettings({ fontScale: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </Transition>
@@ -1378,11 +1591,34 @@ function highlightText(text: string, query: string): string {
 .msg-bubble {
   padding: 10px 13px;
   border-radius: 16px;
-  font-size: 0.92rem;
+  font-size: calc(0.92rem * var(--chat-font-scale, 1));
   line-height: 1.55;
   white-space: normal;
   word-break: break-word;
   position: relative;
+}
+
+/* 消息入场动画 */
+.entrance-on .msg {
+  animation: msg-enter 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.entrance-on .msg-user {
+  animation-name: msg-enter-right;
+}
+
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes msg-enter-right {
+  from { opacity: 0; transform: translateY(6px) translateX(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) translateX(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entrance-on .msg { animation: none; }
 }
 
 .bubble-text {
@@ -1743,6 +1979,204 @@ function highlightText(text: string, query: string): string {
 .emoji-pop-leave-to {
   opacity: 0;
   transform: scale(0.9) translateY(6px);
+}
+
+/* 输入中状态 */
+.header-status.typing {
+  color: var(--accent, #07c160);
+  font-weight: 600;
+}
+
+/* 礼物快捷键高亮 */
+.quick-chip.quick-gift {
+  border-color: color-mix(in srgb, var(--accent, #07c160) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #07c160) 8%, var(--input-bg, #fff));
+}
+
+/* ====== 右键 / 长按菜单 ====== */
+.ctx-menu {
+  position: fixed;
+  z-index: 400;
+  min-width: 150px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--panel-bg, #fff);
+  border: 1px solid var(--card-border, #e5e7eb);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.22);
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-primary, #111827);
+  font-size: 0.86rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+}
+
+.ctx-item:hover {
+  background: var(--app-bg, #f3f4f6);
+}
+
+.ctx-ico {
+  font-size: 0.95rem;
+  width: 18px;
+  text-align: center;
+}
+
+.ctx-cancel {
+  color: var(--text-secondary, #6b7280);
+}
+
+.ctx-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-color, #eee);
+}
+
+.ctx-pop-enter-active,
+.ctx-pop-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  transform-origin: top left;
+}
+
+.ctx-pop-enter-from,
+.ctx-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+/* ====== 设置面板 ====== */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.settings-modal {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel-bg, #fff);
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #f0f2f5);
+}
+
+.settings-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-primary, #111827);
+}
+
+.btn-close-settings {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #9ca3af);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.btn-close-settings:hover {
+  background: var(--app-bg, #f3f4f6);
+}
+
+.settings-body {
+  padding: 8px 20px 20px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-color, #f0f2f5);
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+.setting-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.setting-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setting-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+}
+
+.setting-desc {
+  font-size: 0.76rem;
+  color: var(--text-secondary, #9ca3af);
+}
+
+.switch {
+  flex-shrink: 0;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--border-color, #d1d5db);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.switch.on {
+  background: var(--accent, #07c160);
+}
+
+.switch-dot {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.switch.on .switch-dot {
+  transform: translateX(20px);
+}
+
+.setting-slider {
+  width: 100%;
+  accent-color: var(--accent, #07c160);
+  cursor: pointer;
 }
 
 /* ====== Mobile Panel Overlay ====== */
