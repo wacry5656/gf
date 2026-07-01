@@ -5,6 +5,18 @@ import { checkInitiativeEligibility, checkLongAbsence, clearMessages, generateIn
 import type { SearchResult } from '../api'
 import { clearChatDraft, getChatDraft, saveChatDraft } from '../userSession'
 import MemoryPanel from './MemoryPanel.vue'
+import AmbientBackground from './AmbientBackground.vue'
+import EmojiPicker from './EmojiPicker.vue'
+import {
+  getReadAloud,
+  setReadAloud,
+  isSpeechSupported,
+  speakSequence,
+  cancelSpeak,
+  isVoiceInputSupported,
+  startVoiceInput,
+  type VoiceInputSession,
+} from '../voice'
 
 const props = defineProps<{
   character: Character
@@ -32,6 +44,39 @@ const showSearch = ref(false)
 const searchQuery = ref('')
 const searchResults = ref<SearchResult[]>([])
 const searching = ref(false)
+
+// ====== 花哨 UX 状态 ======
+const readAloud = ref(getReadAloud())
+const speechSupported = isSpeechSupported()
+const voiceInputSupported = isVoiceInputSupported()
+const recording = ref(false)
+const showEmoji = ref(false)
+const showQuickActions = ref(false)
+const reactedSet = ref<Set<string>>(new Set())
+const showScrollBtn = ref(false)
+const copiedSig = ref<string | null>(null)
+const hearts = ref<Array<{ id: number; left: number; delay: number; size: number; symbol: string }>>([])
+const composerEl = ref<HTMLTextAreaElement | null>(null)
+let voiceSession: VoiceInputSession | null = null
+let heartSeq = 0
+let copiedTimer: ReturnType<typeof setTimeout> | null = null
+let lastAffection: number | null = null
+
+const quickActions = [
+  { emoji: '🌹', label: '送花', text: '送你一束花🌹' },
+  { emoji: '🤗', label: '抱抱', text: '抱抱你～' },
+  { emoji: '☕', label: '奶茶', text: '请你喝奶茶🧋' },
+  { emoji: '😘', label: '亲亲', text: '么么哒😘' },
+  { emoji: '🍜', label: '吃了吗', text: '吃饭了吗？' },
+  { emoji: '🌙', label: '晚安', text: '晚安，做个好梦🌙' },
+]
+
+const charCount = computed(() => inputText.value.length)
+
+function msgSignature(msg: ChatMessage, index: number): string {
+  return `${index}::${msg.role}::${msg.content.slice(0, 24)}`
+}
+
 let statusRequestId = 0
 let initiativeTimer: ReturnType<typeof setTimeout> | null = null
 let initiativePollInterval: ReturnType<typeof setInterval> | null = null
@@ -67,6 +112,17 @@ const moodEmoji = computed(() => {
     sulking: '😠', disappointed: '😞', anticipating: '✨',
   }
   return map[emotionInfo.value?.mood || 'warm'] || '😊'
+})
+
+const moodAccent = computed(() => {
+  const map: Record<string, [string, string]> = {
+    warm: ['#fca5a5', '#f472b6'], happy: ['#fde047', '#fb923c'], playful: ['#c084fc', '#f472b6'],
+    shy: ['#fbcfe8', '#f9a8d4'], caring: ['#86efac', '#34d399'], upset: ['#93c5fd', '#818cf8'],
+    jealous: ['#a5b4fc', '#c084fc'], distant: ['#cbd5e1', '#94a3b8'], sulking: ['#94a3b8', '#64748b'],
+    disappointed: ['#a8b8d8', '#8ea0c8'], anticipating: ['#fcd34d', '#f472b6'],
+  }
+  const [a, b] = map[emotionInfo.value?.mood || 'warm'] || map.warm
+  return `linear-gradient(90deg, ${a}, ${b})`
 })
 
 const moodLabel = computed(() => emotionInfo.value?.moodLabel || '温柔')
@@ -145,6 +201,7 @@ async function checkAndShowLongAbsence() {
         updated.push({ role: 'assistant', content: msg })
       }
       emit('update:messages', updated)
+      maybeSpeak(result.greeting)
     }
   } catch {
     longAbsenceCheckedForCharacterId = null
@@ -208,15 +265,139 @@ function applyAssistantReplies(baseMessages: ChatMessage[], replies: string[], s
       finalMessages.push({ role: 'assistant', content: reply })
     }
     emit('update:messages', finalMessages)
+    maybeSpeak(replies)
     return true
   }
 
   if (streamContent) {
     emit('update:messages', [...baseMessages, { role: 'assistant', content: streamContent }])
+    maybeSpeak([streamContent])
     return true
   }
 
   return false
+}
+
+// ====== 朗读（TTS） ======
+
+function maybeSpeak(replies: string[]) {
+  if (!readAloud.value || !speechSupported) return
+  const texts = replies.map((r) => r.trim()).filter((r) => r && r !== '​')
+  if (texts.length > 0) speakSequence(texts, props.character.gender)
+}
+
+function toggleReadAloud() {
+  const next = !readAloud.value
+  readAloud.value = next
+  setReadAloud(next)
+  if (!next) cancelSpeak()
+}
+
+// ====== 语音输入（STT） ======
+
+function toggleVoiceInput() {
+  if (recording.value) {
+    voiceSession?.stop()
+    return
+  }
+  if (!voiceInputSupported) {
+    error.value = '当前浏览器不支持语音输入'
+    return
+  }
+  error.value = ''
+  recording.value = true
+  voiceSession = startVoiceInput(
+    (text) => { inputText.value = text },
+    () => { recording.value = false; voiceSession = null; focusComposer() },
+    (message) => { error.value = message; recording.value = false; voiceSession = null },
+  )
+  if (!voiceSession) recording.value = false
+}
+
+// ====== 表情选择 ======
+
+function onEmojiSelect(emoji: string) {
+  inputText.value += emoji
+  focusComposer()
+}
+
+function focusComposer() {
+  nextTick(() => composerEl.value?.focus())
+}
+
+// ====== 快捷互动 ======
+
+async function quickSend(text: string) {
+  if (loading.value) return
+  showQuickActions.value = false
+  inputText.value = text
+  await send()
+}
+
+// ====== 消息点赞（双击爱心） ======
+
+function toggleReaction(sig: string) {
+  const set = new Set(reactedSet.value)
+  if (set.has(sig)) {
+    set.delete(sig)
+  } else {
+    set.add(sig)
+    burstHearts(['💖', '💗', '💕'])
+  }
+  reactedSet.value = set
+}
+
+// ====== 复制消息 ======
+
+async function copyMessage(sig: string, content: string) {
+  try {
+    await navigator.clipboard.writeText(content)
+    copiedSig.value = sig
+    if (copiedTimer) clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => { copiedSig.value = null }, 1400)
+  } catch {
+    error.value = '复制失败'
+  }
+}
+
+// ====== 爱心特效 ======
+
+function burstHearts(symbols: string[] = ['❤️', '💖', '💗', '💕', '✨']) {
+  const batch = 7
+  for (let i = 0; i < batch; i++) {
+    const id = heartSeq++
+    hearts.value.push({
+      id,
+      left: 30 + Math.random() * 40,
+      delay: Math.random() * 0.35,
+      size: 18 + Math.random() * 18,
+      symbol: symbols[Math.floor(Math.random() * symbols.length)],
+    })
+    setTimeout(() => {
+      hearts.value = hearts.value.filter((h) => h.id !== id)
+    }, 2200)
+  }
+}
+
+// 好感度上升时来一波庆祝特效。
+watch(
+  () => emotionInfo.value?.affection,
+  (next) => {
+    if (typeof next !== 'number') return
+    if (lastAffection !== null && next - lastAffection >= 0.02) {
+      burstHearts(['💗', '💖', '💕', '💘', '✨'])
+    }
+    lastAffection = next
+  },
+)
+
+// ====== 滚动到底部按钮 ======
+
+function onChatScroll() {
+  const el = chatBody.value
+  if (!el) return
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  showScrollBtn.value = distanceFromBottom > 240
 }
 
 async function send() {
@@ -372,6 +553,7 @@ async function checkAndSendInitiative() {
         finalMessages.push({ role: 'assistant', content: reply })
       }
       emit('update:messages', finalMessages)
+      maybeSpeak(randomResult.replies)
       fetchStatus()
       return
     }
@@ -404,6 +586,7 @@ async function checkAndSendInitiative() {
         finalMessages.push({ role: 'assistant', content: reply })
       }
       emit('update:messages', finalMessages)
+      maybeSpeak(replies)
       fetchStatus()
     } else {
       // 生成失败，移除 typing
@@ -418,8 +601,14 @@ async function checkAndSendInitiative() {
   }
 }
 
+function closePopovers() {
+  showEmoji.value = false
+  showQuickActions.value = false
+}
+
 onMounted(() => {
   startInitiativePolling()
+  document.addEventListener('click', closePopovers)
 })
 
 watch(
@@ -440,6 +629,20 @@ watch(
 
 onUnmounted(() => {
   clearInitiativeTimers()
+  cancelSpeak()
+  voiceSession?.stop()
+  if (copiedTimer) clearTimeout(copiedTimer)
+  document.removeEventListener('click', closePopovers)
+})
+
+// 切换角色时停止朗读与录音，避免串音。
+watch(() => props.character?.id, () => {
+  cancelSpeak()
+  if (recording.value) { voiceSession?.stop(); recording.value = false }
+  showEmoji.value = false
+  showQuickActions.value = false
+  reactedSet.value = new Set()
+  lastAffection = null
 })
 
 // ====== 搜索 ======
@@ -546,6 +749,7 @@ function highlightText(text: string, query: string): string {
 
     <!-- Chat area -->
     <section class="conversation">
+      <AmbientBackground />
       <header class="conversation-header">
         <button class="btn-back-mobile" @click="$emit('back')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
@@ -555,6 +759,13 @@ function highlightText(text: string, query: string): string {
           <span class="header-status">{{ moodEmoji }} {{ moodLabel }} · {{ phaseLabel }}</span>
         </div>
         <div class="header-actions">
+          <button
+            v-if="speechSupported"
+            class="tool-button tool-icon"
+            :class="{ 'tool-active': readAloud }"
+            :title="readAloud ? '关闭语音朗读' : '开启语音朗读'"
+            @click="toggleReadAloud"
+          >{{ readAloud ? '🔊' : '🔇' }}</button>
           <button
             v-if="messages.length > 0 && messages[messages.length - 1].role === 'user'"
             class="tool-button"
@@ -571,8 +782,9 @@ function highlightText(text: string, query: string): string {
           >清空</button>
         </div>
       </header>
+      <div class="mood-bar" :style="{ background: moodAccent }"></div>
 
-      <div class="chat-body" ref="chatBody">
+      <div class="chat-body" ref="chatBody" @scroll="onChatScroll">
         <div v-if="messages.length === 0" class="empty-state">
           <div class="empty-avatar">{{ character.name.slice(0, 1) }}</div>
           <div class="empty-title">{{ character.name }}</div>
@@ -596,7 +808,27 @@ function highlightText(text: string, query: string): string {
             <div v-if="msg.content === '\u200B'" class="msg-bubble typing">
               <span class="typing-dots"><span></span><span></span><span></span></span>
             </div>
-            <div v-else class="msg-bubble">{{ msg.content }}</div>
+            <div
+              v-else
+              class="msg-bubble has-actions"
+              :class="{ reacted: reactedSet.has(msgSignature(msg, i)) }"
+              @dblclick="toggleReaction(msgSignature(msg, i))"
+            >
+              <span class="bubble-text">{{ msg.content }}</span>
+              <div class="bubble-tools">
+                <button
+                  class="bubble-tool"
+                  :title="copiedSig === msgSignature(msg, i) ? '\u5DF2\u590D\u5236' : '\u590D\u5236'"
+                  @click.stop="copyMessage(msgSignature(msg, i), msg.content)"
+                >{{ copiedSig === msgSignature(msg, i) ? '\u2713' : '\u29C9' }}</button>
+                <button
+                  class="bubble-tool"
+                  :title="'\u559C\u6B22'"
+                  @click.stop="toggleReaction(msgSignature(msg, i))"
+                >{{ reactedSet.has(msgSignature(msg, i)) ? '\uD83D\uDC96' : '\uD83E\uDD0D' }}</button>
+              </div>
+              <span v-if="reactedSet.has(msgSignature(msg, i))" class="reaction-badge">{{ '\u2764\uFE0F' }}</span>
+            </div>
           </div>
         </div>
 
@@ -611,20 +843,83 @@ function highlightText(text: string, query: string): string {
         </div>
       </div>
 
+      <!-- 爱心特效层 -->
+      <div class="hearts-layer" aria-hidden="true">
+        <span
+          v-for="h in hearts"
+          :key="h.id"
+          class="floating-heart"
+          :style="{ left: `${h.left}%`, fontSize: `${h.size}px`, animationDelay: `${h.delay}s` }"
+        >{{ h.symbol }}</span>
+      </div>
+
+      <!-- 回到底部 -->
+      <Transition name="fade">
+        <button v-if="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottom" title="回到最新">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+        </button>
+      </Transition>
+
       <div v-if="error" class="chat-error">{{ error }}</div>
 
-      <footer class="composer">
-        <textarea
-          v-model="inputText"
-          @keydown="handleKeydown"
-          placeholder="输入消息..."
-          rows="1"
-          :disabled="loading"
-        ></textarea>
-        <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13M22 2L15 22 11 13 2 9 22 2Z"/></svg>
-        </button>
-      </footer>
+      <div class="composer-wrap">
+        <!-- 快捷互动 -->
+        <Transition name="fade">
+          <div v-if="showQuickActions" class="quick-actions">
+            <button
+              v-for="qa in quickActions"
+              :key="qa.label"
+              class="quick-chip"
+              :disabled="loading"
+              @click="quickSend(qa.text)"
+            ><span class="quick-emoji">{{ qa.emoji }}</span>{{ qa.label }}</button>
+          </div>
+        </Transition>
+
+        <footer class="composer">
+          <button
+            class="composer-icon"
+            :class="{ active: showQuickActions }"
+            title="快捷互动"
+            @click.stop="showQuickActions = !showQuickActions; showEmoji = false"
+          >🎁</button>
+
+          <div class="emoji-wrap">
+            <button
+              class="composer-icon"
+              :class="{ active: showEmoji }"
+              title="表情"
+              @click.stop="showEmoji = !showEmoji; showQuickActions = false"
+            >😊</button>
+            <Transition name="emoji-pop">
+              <div v-if="showEmoji" class="emoji-pop">
+                <EmojiPicker @select="onEmojiSelect" />
+              </div>
+            </Transition>
+          </div>
+
+          <button
+            v-if="voiceInputSupported"
+            class="composer-icon"
+            :class="{ recording }"
+            :title="recording ? '停止语音输入' : '语音输入'"
+            @click="toggleVoiceInput"
+          >🎤</button>
+
+          <textarea
+            ref="composerEl"
+            v-model="inputText"
+            @keydown="handleKeydown"
+            :placeholder="recording ? '正在聆听…' : '输入消息...'"
+            rows="1"
+            :disabled="loading"
+          ></textarea>
+          <span v-if="charCount > 0" class="char-count">{{ charCount }}</span>
+          <button @click="send" :disabled="loading || !inputText.trim()" class="btn-send">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13M22 2L15 22 11 13 2 9 22 2Z"/></svg>
+          </button>
+        </footer>
+      </div>
     </section>
 
     <!-- Search Overlay -->
@@ -857,14 +1152,18 @@ function highlightText(text: string, query: string): string {
 
 /* ====== Conversation Area ====== */
 .conversation {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--chat-bg, #f0f2f5);
+  overflow: hidden;
 }
 
 .conversation-header {
+  position: relative;
+  z-index: 3;
   min-height: 56px;
   display: flex;
   align-items: center;
@@ -873,6 +1172,39 @@ function highlightText(text: string, query: string): string {
   background: var(--panel-bg, #fff);
   border-bottom: 1px solid var(--border-color, #e5e7eb);
   flex-shrink: 0;
+}
+
+/* 情绪色带 */
+.mood-bar {
+  position: relative;
+  z-index: 3;
+  height: 3px;
+  flex-shrink: 0;
+  background: linear-gradient(90deg, #fca5a5, #f472b6);
+  background-size: 200% 100%;
+  transition: background 0.6s ease;
+  animation: mood-shift 6s ease-in-out infinite;
+}
+
+@keyframes mood-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.tool-icon {
+  padding: 0 9px;
+  font-size: 0.95rem;
+}
+
+.tool-icon.tool-active {
+  border-color: var(--accent, #07c160);
+  background: color-mix(in srgb, var(--accent, #07c160) 14%, transparent);
+}
+
+.tool-button.tool-icon:hover {
+  color: inherit;
+  border-color: var(--accent, #07c160);
+  background: color-mix(in srgb, var(--accent, #07c160) 12%, transparent);
 }
 
 .header-center {
@@ -936,6 +1268,8 @@ function highlightText(text: string, query: string): string {
 
 /* ====== Chat Messages ====== */
 .chat-body {
+  position: relative;
+  z-index: 1;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1046,9 +1380,14 @@ function highlightText(text: string, query: string): string {
   border-radius: 16px;
   font-size: 0.92rem;
   line-height: 1.55;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
   position: relative;
+}
+
+.bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .msg-user .msg-bubble {
@@ -1062,6 +1401,76 @@ function highlightText(text: string, query: string): string {
   color: var(--text-primary, #111827);
   border-bottom-left-radius: 4px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* 气泡交互工具 */
+.msg-bubble.has-actions {
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.msg-bubble.reacted {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, #f472b6 55%, transparent);
+}
+
+.bubble-tools {
+  position: absolute;
+  top: -12px;
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--panel-bg, #fff);
+  border: 1px solid var(--border-color, #e5e7eb);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  transform: translateY(4px) scale(0.9);
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  z-index: 4;
+}
+
+.msg-user .bubble-tools { right: 6px; }
+.msg-bot .bubble-tools { left: 6px; }
+
+.msg-bubble.has-actions:hover .bubble-tools {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.bubble-tool {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 999px;
+  transition: background 0.12s, transform 0.12s;
+}
+
+.bubble-tool:hover {
+  background: var(--app-bg, #f3f4f6);
+  transform: scale(1.15);
+}
+
+.reaction-badge {
+  position: absolute;
+  bottom: -9px;
+  right: -4px;
+  font-size: 0.72rem;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--panel-bg, #fff);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  animation: reaction-pop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.msg-user .reaction-badge { right: auto; left: -4px; }
+
+@keyframes reaction-pop {
+  0% { transform: scale(0); }
+  100% { transform: scale(1); }
 }
 
 .msg-consecutive .msg-bubble {
@@ -1170,7 +1579,170 @@ function highlightText(text: string, query: string): string {
 .btn-send:disabled {
   opacity: 0.35;
   cursor: not-allowed;
-  background: #07c160;
+  background: var(--accent, #07c160);
+}
+
+/* ====== 爱心特效层 ====== */
+.hearts-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 6;
+}
+
+.floating-heart {
+  position: absolute;
+  bottom: 84px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+  animation: heart-float 2.1s ease-out forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes heart-float {
+  0% { transform: translateY(0) scale(0.4) rotate(0deg); opacity: 0; }
+  15% { opacity: 1; transform: translateY(-16px) scale(1.1) rotate(-6deg); }
+  70% { opacity: 1; }
+  100% { transform: translateY(-58vh) scale(0.9) rotate(10deg); opacity: 0; }
+}
+
+/* ====== 回到底部 ====== */
+.scroll-bottom-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 96px;
+  z-index: 5;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color, #e5e7eb);
+  background: var(--panel-bg, #fff);
+  color: var(--accent, #07c160);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.scroll-bottom-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+}
+
+/* ====== Composer 增强 ====== */
+.composer-wrap {
+  position: relative;
+  z-index: 3;
+  flex-shrink: 0;
+}
+
+.quick-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 2px;
+  overflow-x: auto;
+  background: var(--panel-bg, #f7f8fa);
+  scrollbar-width: none;
+}
+
+.quick-actions::-webkit-scrollbar { display: none; }
+
+.quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  background: var(--input-bg, #fff);
+  color: var(--text-primary, #374151);
+  font-size: 0.82rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.quick-chip:hover:not(:disabled) {
+  border-color: var(--accent, #07c160);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px var(--accent-glow, rgba(7, 193, 96, 0.25));
+}
+
+.quick-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quick-emoji {
+  font-size: 0.95rem;
+}
+
+.composer-icon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.composer-icon:hover {
+  background: color-mix(in srgb, var(--accent, #07c160) 12%, transparent);
+  transform: translateY(-1px);
+}
+
+.composer-icon.active {
+  background: color-mix(in srgb, var(--accent, #07c160) 18%, transparent);
+}
+
+.composer-icon.recording {
+  background: rgba(239, 68, 68, 0.15);
+  animation: mic-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+.emoji-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.emoji-pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 20;
+}
+
+.char-count {
+  align-self: flex-end;
+  margin-bottom: 12px;
+  font-size: 0.68rem;
+  color: var(--text-secondary, #9ca3af);
+  flex-shrink: 0;
+}
+
+.emoji-pop-enter-active,
+.emoji-pop-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  transform-origin: bottom left;
+}
+
+.emoji-pop-enter-from,
+.emoji-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.9) translateY(6px);
 }
 
 /* ====== Mobile Panel Overlay ====== */

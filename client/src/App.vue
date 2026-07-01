@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import type { Character, ChatMessage, User } from './api'
 import { getCharacters, createCharacter, deleteCharacter, getMessages } from './api'
 import { getCurrentUser, saveUser, clearUser, getActiveCharacterId, saveActiveCharacterId, clearActiveCharacterId } from './userSession'
-import { getTheme, setTheme, type Theme } from './theme'
+import { getTheme, setTheme, THEMES, type Theme } from './theme'
 import LoginPage from './components/LoginPage.vue'
 import CharacterSetup from './components/CharacterSetup.vue'
 import ChatWindow from './components/ChatWindow.vue'
@@ -18,18 +18,17 @@ const appError = ref('')
 const creatingCharacter = ref(false)
 const deletingCharacterId = ref<number | null>(null)
 const currentTheme = ref<Theme>(getTheme())
+const showThemeMenu = ref(false)
 let activeCharacterRequestId = 0
 
-function cycleTheme() {
-  const themes: Theme[] = ['wechat', 'imessage', 'dark']
-  const next = themes[(themes.indexOf(currentTheme.value) + 1) % themes.length]
-  currentTheme.value = next
-  setTheme(next)
+function chooseTheme(theme: Theme) {
+  currentTheme.value = theme
+  setTheme(theme)
+  showThemeMenu.value = false
 }
 
-const themeLabel = computed(() => {
-  const map: Record<Theme, string> = { wechat: '💬', imessage: '💙', dark: '🌙' }
-  return map[currentTheme.value]
+const currentThemeEmoji = computed(() => {
+  return THEMES.find((t) => t.id === currentTheme.value)?.emoji || '🎨'
 })
 
 onMounted(() => {
@@ -38,7 +37,16 @@ onMounted(() => {
     user.value = saved
     loadCharacters()
   }
+  document.addEventListener('click', closeThemeMenu)
 })
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeThemeMenu)
+})
+
+function closeThemeMenu() {
+  showThemeMenu.value = false
+}
 
 function onLogin(u: User) {
   appError.value = ''
@@ -237,7 +245,24 @@ function getRelationLabel(mode: string | undefined): string {
           </div>
         </div>
         <div class="header-right">
-          <button class="btn-theme" @click="cycleTheme" title="切换主题">{{ themeLabel }}</button>
+          <div class="theme-picker">
+            <button class="btn-theme" @click.stop="showThemeMenu = !showThemeMenu" title="切换主题">{{ currentThemeEmoji }}</button>
+            <Transition name="theme-pop">
+              <div v-if="showThemeMenu" class="theme-menu" @click.stop>
+                <button
+                  v-for="t in THEMES"
+                  :key="t.id"
+                  class="theme-menu-item"
+                  :class="{ active: t.id === currentTheme }"
+                  @click="chooseTheme(t.id)"
+                >
+                  <span class="theme-menu-emoji">{{ t.emoji }}</span>
+                  <span class="theme-menu-label">{{ t.label }}</span>
+                  <span v-if="t.id === currentTheme" class="theme-menu-check">✓</span>
+                </button>
+              </div>
+            </Transition>
+          </div>
           <span class="user-badge">{{ user.username }}</span>
           <button class="btn-logout" @click="onLogout">退出</button>
         </div>
@@ -411,6 +436,73 @@ function getRelationLabel(mode: string | undefined): string {
 }
 .btn-theme:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+.theme-picker {
+  position: relative;
+}
+
+.theme-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 300;
+  min-width: 160px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--panel-bg, #fff);
+  border: 1px solid var(--card-border, #e5e7eb);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+}
+
+.theme-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-primary, #111827);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.theme-menu-item:hover {
+  background: var(--app-bg, #f3f4f6);
+}
+
+.theme-menu-item.active {
+  background: color-mix(in srgb, var(--accent, #07c160) 14%, transparent);
+  font-weight: 600;
+}
+
+.theme-menu-emoji {
+  font-size: 1.05rem;
+}
+
+.theme-menu-label {
+  flex: 1;
+  text-align: left;
+}
+
+.theme-menu-check {
+  color: var(--accent, #07c160);
+  font-weight: 700;
+}
+
+.theme-pop-enter-active,
+.theme-pop-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  transform-origin: top right;
+}
+
+.theme-pop-enter-from,
+.theme-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.9) translateY(-4px);
 }
 
 .btn-logout {
